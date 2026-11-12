@@ -55,5 +55,6 @@ void fram_write_status(fram_t *fram, uint8_t value);
 void fram_read(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count);
 void fram_write(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count);
 void fram_erase_all(fram_t *fram);
+int fram_probe(fram_t *fram, uint8_t sr_out[2]);
 
 #endif  // FRAM_H

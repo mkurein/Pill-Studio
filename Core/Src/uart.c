@@ -1,146 +1,122 @@
 #include "uart.h"
 #include "DataFile.h"
+#include "diag.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
+#include "semphr.h"
 
+extern QueueHandle_t uartQueue;          /* created in main.c */
 
-extern QueueHandle_t uartQueue;  //  Declare(Объявляем) a variable created in main.c
-extern volatile uint32_t last_rx_time;
+static volatile uint8_t uart1_rx_byte;   /* HAL receives one byte here per interrupt */
+static SemaphoreHandle_t log_mutex;      /* serialises USART3 output between tasks */
 
-volatile char uart1_rx_buf[UART_BUF_SIZE];    // Receive buffer
-volatile uint8_t uart1_rx_head = 0;           // Головной указатель
-volatile uint8_t uart1_rx_tail = 0;           // Хвостовой указатель
+/*********************************************************************
+ * USART3 log (115200) — human/AI readable text
+ *********************************************************************/
+void log_init(void)
+{
+    if (log_mutex == NULL) {
+        log_mutex = xSemaphoreCreateMutex();
+    }
+}
 
-void log_printf(const char *format, ...) {
+static void log_write(const char *buf, size_t len)
+{
+    bool locked = false;
+    if (log_mutex != NULL &&
+        xTaskGetSchedulerState() == taskSCHEDULER_RUNNING &&
+        (SCB->ICSR & SCB_ICSR_VECTACTIVE_Msk) == 0) {
+        locked = (xSemaphoreTake(log_mutex, pdMS_TO_TICKS(200)) == pdTRUE);
+    }
+    HAL_UART_Transmit(&huart3, (uint8_t *)buf, (uint16_t)len, 100);
+    if (locked) {
+        xSemaphoreGive(log_mutex);
+    }
+}
+
+void log_printf(const char *format, ...)
+{
     char buffer[128];
     va_list args;
     va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
+    int length = vsnprintf(buffer, sizeof(buffer), format, args);
     va_end(args);
-    HAL_UART_Transmit(&huart3, (uint8_t *)buffer, strlen(buffer), 100);
+
+    if (length <= 0) return;
+    size_t tx_len = (size_t)length;
+    if (tx_len >= sizeof(buffer)) tx_len = sizeof(buffer) - 1;
+    log_write(buffer, tx_len);
 }
 
-void printf_uart3(const char *format, ...)
+/* printf() goes to the USART3 log as well (USART1 is a binary protocol port,
+ * text there would corrupt protocol frames). */
+int _write(int file, char *ptr, int len)
 {
-  char buffer[128];
-  va_list args;
-  va_start(args, format);
-  int length = vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-
-  size_t tx_len = 0;
-  if (length > 0) {
-      tx_len = (size_t)length;
-      if (tx_len >= sizeof(buffer)) {
-          tx_len = sizeof(buffer) - 1;
-      }
-  }
-  HAL_UART_Transmit(&huart3, (uint8_t*)buffer, tx_len, 100);
-}
-
-int _write(int file, char *ptr, int len) {
-    for (int i = 0; i < len; i++) {
-        HAL_UART_Transmit(&huart1, (uint8_t *)&ptr[i], 1, HAL_MAX_DELAY);
-    }
+    (void)file;
+    if (len > 0) log_write(ptr, (size_t)len);
     return len;
 }
 
 /*********************************************************************
- * Send and receive one character to the UART and othet
+ * USART1 (38400) — binary protocol port
  *********************************************************************/
- void uart1_put_ch(char ch) {
-	  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, HAL_MAX_DELAY);
-	 }
-
- /* static char uart1_get_ch(void) {
-	 uint8_t ch;
-// Принимаем один байт UART1, блокируя выполнение программы до получения данных
-	 if (HAL_UART_Receive(&huart1, &ch, 1, HAL_MAX_DELAY) == HAL_OK) {
-	     return (char)ch;
-	 }
-	     return -1;  // В случае ошибки, возвращаем -1
-} */
-
- void uart1_put_u16(uint16_t data) {
-     uint8_t buffer[2];
-     buffer[0] = (data >> 8) & 0xFF;  // Старший байт
-     buffer[1] = data & 0xFF;         // Младший байт
-     HAL_UART_Transmit(&huart1, buffer, 2, HAL_MAX_DELAY);
- }
-
- void uart1_put_u32(uint32_t data) {
-     uint8_t buffer[4];
-     buffer[0] = (data >> 24) & 0xFF;
-     buffer[1] = (data >> 16) & 0xFF;
-     buffer[2] = (data >> 8) & 0xFF;
-     buffer[3] = data & 0xFF;
-     HAL_UART_Transmit(&huart1, buffer, 4, HAL_MAX_DELAY);
- }
-
- /*********************************************************************
- * Receive one command to the UART
- *********************************************************************/
- int uart_read(char *ch)
- {
-     if (uart1_rx_tail == uart1_rx_head) {
-    	 //printf("READ: Buffer empty. Tail: %d, Head: %d\n", uart1_rx_tail, uart1_rx_head);
-         return 0;                         // Buffer is empty
-     }
-     //then the FreeRTOS function that disables interrupts
-     taskENTER_CRITICAL();                // Blocking access to buffer
-     *ch = uart1_rx_buf[uart1_rx_tail];
-     uart1_rx_tail = (uart1_rx_tail + 1) % UART_BUF_SIZE;
-     taskEXIT_CRITICAL();                 // Unlock
-
-     return 1;
- }
-
-/*********************************************************************/
-char usart_recv_byte(UART_HandleTypeDef *huart) {
-    uint8_t ch;
-    HAL_UART_Receive(huart, &ch, 1, HAL_MAX_DELAY);
-    return (char)ch;
+void uart1_put_ch(char ch)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1, 100);
 }
 
- /*********************************************************************
- * Receive for processing commands to the UART by interrupt
+void uart1_write(const uint8_t *data, uint16_t len)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)data, len, 100 + len);
+}
+
+void uart1_put_u16(uint16_t data)
+{
+    uint8_t buffer[2] = { (uint8_t)(data >> 8), (uint8_t)data };
+    uart1_write(buffer, 2);
+}
+
+void uart1_put_u32(uint32_t data)
+{
+    uint8_t buffer[4] = { (uint8_t)(data >> 24), (uint8_t)(data >> 16),
+                          (uint8_t)(data >> 8), (uint8_t)data };
+    uart1_write(buffer, 4);
+}
+
+/* Call once after uartQueue is created: arms the 1-byte RX interrupt. */
+void uart1_start_rx(void)
+{
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_byte, 1);
+}
+
+/*********************************************************************
+ * RX interrupt: push every byte into the FreeRTOS queue.
+ * Frame boundaries are detected in Uart1Task by an inter-byte gap.
  *********************************************************************/
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-      if (huart->Instance == USART1) {
-        uint8_t ch = uart1_rx_buf[uart1_rx_head];
-        // uint8_t ch = uart1_rx_buf[0];
-        uint8_t next_head = (uart1_rx_head + 1) % UART_BUF_SIZE;
+    if (huart->Instance != USART1) return;
 
-        if (next_head != uart1_rx_tail) {
-        	//uart1_rx_buf[uart1_rx_head] = ch;
-            uart1_rx_head = next_head;
-        }
-        else {
-            //printf("BUFFER OVERFLOW! HEAD: %d, TAIL: %d\n", uart1_rx_head, uart1_rx_tail);
-       	    uart1_rx_head = 0;
-       	    uart1_rx_tail = 0;
-        }
+    uint8_t ch = uart1_rx_byte;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
-        // Отправляем байт в очередь FreeRTOS
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        //xQueueSendFromISR(uartQueue, &ch, &xHigherPriorityTaskWoken);
-        xQueueSendFromISR(uartQueue, (const void *)&ch, &xHigherPriorityTaskWoken);
-
-        // Update the time of the last received byte
-        last_rx_time = xTaskGetTickCountFromISR();
-        //uart1_put_ch(uart1_rx_head);
-
-        // Перезапускаем приём
-        HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_buf[uart1_rx_head], 1);
-        // HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_buf[0], 1);
-
-        // Переключение контекста, если нужно
-        if (xHigherPriorityTaskWoken == pdTRUE) {
-            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-        }
+    if (uartQueue == NULL ||
+        xQueueSendFromISR(uartQueue, &ch, &xHigherPriorityTaskWoken) != pdPASS) {
+        g_diag.queue_full++;
     }
+
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_byte, 1);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
+/* Overrun / framing / noise error: HAL aborts reception, so it must be
+ * re-armed here, otherwise USART1 goes deaf until reset. */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance != USART1) return;
 
+    g_diag.uart_err++;
+    __HAL_UART_CLEAR_PEFLAG(huart);   /* SR then DR read clears PE/FE/NE/ORE */
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_byte, 1);
+}

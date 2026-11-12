@@ -67,3 +67,23 @@ Reason: аппаратный NSS на F1 держит линию low всё вр
 Длинные руководства — `docs/guides|notes|lessons/`, в контекст LLM
 не грузятся без необходимости.
 Reason: окно Qwen3.8-27B 8192 tokens.
+
+## ADR-011 — LED: manual / auto mode (T5)
+
+`0x70 00/01` переводит PC13 в ручной режим, `LedTask` перестаёт мигать;
+`0x70 02` возвращает авто-мигание. Состояние читается `0x71`.
+Reason: иначе команда перетиралась `LedTask` через ≤ 1 s, проверить её было нельзя.
+
+## ADR-012 — Fault capture in .noinit + HIL tool
+
+`g_diag` (`diag.c`) в секции `.noinit` линкер-скрипта: счётчики и запись о
+последнем сбое переживают soft reset. Fault handlers остаются в `stm32f1xx_it.c`,
+перехват — `DIAG_FAULT_ENTRY()` в USER CODE. Хост `tools/hil.py` читает `g_diag`,
+регистры и GPIO по SWD (OpenOCD) и гоняет полный тест по UART1/UART3.
+Reason: AI-агент и человек проверяют прошивку на железе без IDE и видят причину сбоя.
+
+## ADR-013 — Command-line build `make` → `build/`
+
+Корневой `Makefile` (arm-none-eabi-gcc из PATH) собирает в `build/`, не трогая
+`Debug/` CubeIDE. Новые `.c` в `Core/Src` подхватываются автоматически.
+Reason: сборка на macOS и в CI без генерации `Debug/makefile`.

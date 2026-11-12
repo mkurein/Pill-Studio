@@ -17,13 +17,15 @@
 | [DECISIONS.md](DECISIONS.md) | 930 | ADR-001..010 |
 | [TODO.md](TODO.md) | 900 | задачи T1..T9 |
 | [TASK_TEMPLATE.md](TASK_TEMPLATE.md) | 320 | формат задачи для Qwen |
+| [HIL_TESTING.md](HIL_TESTING.md) | ~600 | автотест на плате: `tools/hil.py`, подключение |
 
 ## Source
 
 | Area | Files | tok |
 |------|-------|------|
 | Tasks, init, commands | `Core/Src/main.c` (USER CODE 0, 2, 4, 5) | 5300 целиком — давать функциями |
-| UART | `Core/Src/uart.c`, `Core/Inc/uart.h` | 1610 |
+| UART | `Core/Src/uart.c`, `Core/Inc/uart.h` | ~1500 |
+| Diagnostics / faults | `Core/Src/diag.c`, `Core/Inc/diag.h` | ~1300 |
 | FRAM | `Core/Src/fram.c`, `Core/Inc/fram.h` | 1500 |
 | CRC | `Core/Src/crc16.c`, `Core/Inc/crc16.h` | 570 |
 | Constants | `Core/Inc/DataFile.h` | 85 |
@@ -57,5 +59,6 @@
 | [notes/](notes/) | BOOT_ALGORITHM, README_UART (таймаут), README_RAM_RTOS (память), README_INTERRUPTS |
 | [lessons/](lessons/) | мини-уроки 01–06, PROJECT_FIRMWARE_LESSON |
 | [`tools/RUN.md`](../tools/RUN.md) | хост `uart_check.py` / `.sh` из PowerShell |
+| [`studio/`](../studio/) | F103 Studio — GUI (Rust egui): справочник MCU, UART, RTOS-монитор |
 
 Если модели нужен кусок оттуда — давать раздел, не файл целиком.

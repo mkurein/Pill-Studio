@@ -19,3 +19,9 @@ Thumbs.db
 # VS Code extensions
 *.vsix
 
+# HIL tools: local venv, build output, per-machine port config
+.venv/
+build/
+tools/hil.json
+# Rust studio build output
+studio/target/

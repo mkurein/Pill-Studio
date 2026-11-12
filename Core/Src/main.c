@@ -27,6 +27,8 @@
 #include "uart.h"
 #include "crc16.h"
 #include "fram.h"
+#include "diag.h"
+#include "version.h"
 
 /* USER CODE END Includes */
 
@@ -37,8 +39,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-volatile uint32_t last_rx_time;                   // Time of last received byte
-extern volatile char uart1_rx_buf[UART_BUF_SIZE];
 fram_t fram;
 fram_cfg_t cfgFRAM;
 QueueHandle_t uartQueue;
@@ -97,80 +97,217 @@ void Uart1Task(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void LedTask(void *pvParameters) {
-	//int c = 'A'; // 0x41
+static volatile uint8_t led_manual = 0;   // 1: LED driven by CMD_LED, 0: LedTask blinks
 
+void LedTask(void *pvParameters) {
+    (void)pvParameters;
     while (1) {
-        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-        //uart1_put_ch(c);
+        if (!led_manual) {
+            HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
-void Uart1Task(void *pvParameters) {
-    uint8_t command[UART_BUF_SIZE];
-    uint8_t ok[2] = {ID_BU, 0x00}; 
-    uint8_t ok_buf[4];
-    uint8_t index = 0;
-    uint16_t crc = 0;
-    char receivedChar;
-    char wr_data[7] = {'K', 'U', 'R', 'E', 'I', 'N'};
-    char rd_data[7] = {0};
-    uart1_put_ch('S');  // Сигнал о запуске задачи
-    while (1) {
-        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+/* Reply: ID_BU | status | payload | CRC16 (LSB first) */
+static void send_reply(uint8_t status, const uint8_t *payload, uint16_t len)
+{
+    uint8_t out[UART_BUF_SIZE];
+    if (len > sizeof(out) - 4) len = sizeof(out) - 4;
+    out[0] = ID_BU;
+    out[1] = status;
+    if (len) memcpy(&out[2], payload, len);
+    uint16_t crc = crc16(out, (uint16_t)(len + 2));
+    out[len + 2] = (uint8_t)(crc & 0xFF);
+    out[len + 3] = (uint8_t)(crc >> 8);
+    uart1_write(out, (uint16_t)(len + 4));
+}
 
-        // Waiting for a byte from the queue(очереди)
-        if (xQueueReceive(uartQueue, &receivedChar, pdMS_TO_TICKS(2)) == pdPASS) {
-            if (index < UART_BUF_SIZE) {
-                command[index++] = receivedChar;
-               // uart1_put_ch(receivedChar);
-            }
+typedef struct __attribute__((packed)) {
+    uint32_t uptime_ms;
+    uint32_t reset_cause;
+    uint32_t boot_count;
+    uint32_t heartbeat;
+    uint32_t heap_free;
+    uint32_t heap_min;
+    uint16_t stack_free_default;   // bytes
+    uint16_t stack_free_led;
+    uint16_t stack_free_uart;
+    uint32_t rx_frames;
+    uint32_t rx_crc_err;
+    uint32_t uart_err;
+    uint32_t queue_full;
+    uint32_t fram_ok;
+    uint32_t fram_fail;
+    uint8_t  led_odr;
+    uint8_t  led_manual;
+} status_reply_t;
+
+static uint16_t stack_free_bytes(osThreadId_t h)
+{
+    return h ? (uint16_t)(uxTaskGetStackHighWaterMark((TaskHandle_t)h) * sizeof(StackType_t)) : 0;
+}
+
+static void fill_status(status_reply_t *st)
+{
+    st->uptime_ms   = HAL_GetTick();
+    st->reset_cause = g_diag.reset_cause;
+    st->boot_count  = g_diag.boot_count;
+    st->heartbeat   = g_diag.heartbeat;
+    st->heap_free   = xPortGetFreeHeapSize();
+    st->heap_min    = xPortGetMinimumEverFreeHeapSize();
+    st->stack_free_default = stack_free_bytes(defaultTaskHandle);
+    st->stack_free_led     = stack_free_bytes(LedTaskHandle);
+    st->stack_free_uart    = stack_free_bytes(Uart1TaskHandle);
+    st->rx_frames  = g_diag.rx_frames;
+    st->rx_crc_err = g_diag.rx_crc_err;
+    st->uart_err   = g_diag.uart_err;
+    st->queue_full = g_diag.queue_full;
+    st->fram_ok    = g_diag.fram_ok;
+    st->fram_fail  = g_diag.fram_fail;
+    st->led_odr    = (GPIOC->ODR & GPIO_PIN_13) ? 1 : 0;
+    st->led_manual = led_manual;
+}
+
+/* FRAM write/read-back of a pseudo-random pattern; original content is restored.
+ * payload: [mismatches, first_bad_index, expected, got] */
+#define FRAM_TEST_ADDR 0x7F00u
+#define FRAM_TEST_LEN  64u
+static uint8_t fram_pattern_test(uint8_t *payload)
+{
+    static uint8_t saved[FRAM_TEST_LEN], pat[FRAM_TEST_LEN], rd[FRAM_TEST_LEN];
+    uint8_t seed = (uint8_t)HAL_GetTick();
+    uint8_t bad = 0, first = 0xFF, exp = 0, got = 0;
+
+    fram_read(&fram, FRAM_TEST_ADDR, saved, FRAM_TEST_LEN);
+    for (uint32_t i = 0; i < FRAM_TEST_LEN; i++) pat[i] = (uint8_t)(i * 37u + seed);
+    fram_write(&fram, FRAM_TEST_ADDR, pat, FRAM_TEST_LEN);
+    fram_read(&fram, FRAM_TEST_ADDR, rd, FRAM_TEST_LEN);
+    for (uint32_t i = 0; i < FRAM_TEST_LEN; i++) {
+        if (rd[i] != pat[i]) {
+            if (bad == 0) { first = (uint8_t)i; exp = pat[i]; got = rd[i]; }
+            if (bad < 255) bad++;
         }
+    }
+    fram_write(&fram, FRAM_TEST_ADDR, saved, FRAM_TEST_LEN);
 
-        uint32_t current_time = xTaskGetTickCount();
-        uint32_t diff = current_time - last_rx_time;
+    payload[0] = bad; payload[1] = first; payload[2] = exp; payload[3] = got;
+    return bad ? ST_FAIL : ST_OK;
+}
 
-        if (index > 0 && diff > pdMS_TO_TICKS(UART_TIMEOUT_MS)) {
-          //  uart1_put_u32(diff);  //  для отладки таймаута
-            crc = process_crc(command, index, true);
-            // uart1_put_ch(crc);
-            if (crc == 1) {
-                switch (command[0]) {
-                    case 0x70:
-                        if (command[1] == 0) {
-                            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
-                        }
-                        if (command[1] == 1) {
-                            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-                        }
-                        break;
+static void handle_frame(const uint8_t *cmd, uint16_t len)
+{
+    uint8_t payload[UART_BUF_SIZE - 4];
+    uint16_t plen = 0;
+    uint8_t status = ST_OK;
+    uint16_t nargs = (uint16_t)(len - 3);     // without CMD and CRC16
 
-                    case 2:
-                        if (command[1] == 0) {
-                            fram_write(&fram, 0x0150, (uint8_t *)wr_data, sizeof(wr_data));
-                            HAL_Delay(1000);
-                            fram_read(&fram, 0x0150, (uint8_t *)rd_data, sizeof(wr_data));
-                        }
-                        break;
-                }                
-            }
-            calculate_crc_for_2_bytes(ok, ok_buf);
-            for (int i = 0; i < 4; i++) {
-                uart1_put_ch(ok_buf[i]);
-            }
+    g_diag.last_cmd = cmd[0];
 
-            //HAL_UART_Transmit(&huart1, ok_ptr, 4, 100); // 100 мс таймаут
-            //uart1_put_ch(0xEE);  // Добавляем маркер конца посылки
-            //uart1_put_ch(0xFF);
+    switch (cmd[0]) {
+    case CMD_PING:
+        plen = (uint16_t)strlen(fw_version);
+        memcpy(payload, fw_version, plen);
+        break;
 
-            while (uxQueueMessagesWaiting(uartQueue) > 0) {
-                char discardChar;
-                xQueueReceive(uartQueue, &discardChar, 0);
-            }
-            index = 0;
-        } 
-        vTaskDelay(pdMS_TO_TICKS(3));  // Adding a delay
+    case CMD_LED:
+        if (nargs < 1 || cmd[1] > 2) { status = ST_BAD_ARG; break; }
+        if (cmd[1] == 2) {
+            led_manual = 0;
+        } else {
+            led_manual = 1;
+            /* Blue Pill LED on PC13 is active-low */
+            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, cmd[1] ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        }
+        break;
+
+    case CMD_LED_GET:
+        payload[0] = (GPIOC->ODR & GPIO_PIN_13) ? 1 : 0;
+        payload[1] = led_manual;
+        plen = 2;
+        break;
+
+    case CMD_FRAM: {
+        uint8_t sub = nargs ? cmd[1] : 0;
+        if (sub == 0) {
+            static const char wr_data[7] = "KUREIN";
+            char rd_data[7] = {0};
+            fram_write(&fram, 0x0150, (uint8_t *)wr_data, sizeof(wr_data));
+            fram_read(&fram, 0x0150, (uint8_t *)rd_data, sizeof(rd_data));
+            status = memcmp(wr_data, rd_data, sizeof(wr_data)) ? ST_FAIL : ST_OK;
+            memcpy(payload, rd_data, sizeof(rd_data));
+            plen = sizeof(rd_data);
+        } else if (sub == 1) {
+            status = fram_probe(&fram, payload) == 0 ? ST_OK : ST_FAIL;
+            plen = 2;
+        } else if (sub == 2) {
+            status = fram_pattern_test(payload);
+            plen = 4;
+        } else {
+            status = ST_BAD_ARG;
+            break;
+        }
+        if (status == ST_OK) g_diag.fram_ok++; else g_diag.fram_fail++;
+        log_printf("TEST fram sub=%u result=%s\r\n", sub, status == ST_OK ? "OK" : "FAIL");
+        break;
+    }
+
+    case CMD_STATUS: {
+        status_reply_t st;
+        fill_status(&st);
+        memcpy(payload, &st, sizeof(st));
+        plen = sizeof(st);
+        break;
+    }
+
+    case CMD_RESET:
+        send_reply(ST_OK, NULL, 0);
+        log_printf("RESET by command\r\n");
+        vTaskDelay(pdMS_TO_TICKS(20));
+        NVIC_SystemReset();
+        break;
+
+    default:
+        status = ST_UNKNOWN_CMD;
+        break;
+    }
+    send_reply(status, payload, plen);
+}
+
+void Uart1Task(void *pvParameters) {
+    (void)pvParameters;
+    uint8_t command[UART_BUF_SIZE];
+    uint16_t index = 0;
+    bool overflow = false;
+    uint8_t ch;
+
+    log_printf("Uart1Task started\r\n");
+    while (1) {
+        /* Idle: block until a byte arrives. Inside a frame: wait at most
+         * UART_TIMEOUT_MS for the next byte; a longer gap ends the frame.
+         * The whole queue is drained without extra delays, so long frames
+         * are not split (old code took 1 byte per 3 ms and cut frames > ~7 bytes). */
+        TickType_t wait = index ? pdMS_TO_TICKS(UART_TIMEOUT_MS) : portMAX_DELAY;
+        if (xQueueReceive(uartQueue, &ch, wait) == pdPASS) {
+            if (index < UART_BUF_SIZE) command[index++] = ch;
+            else overflow = true;
+            continue;
+        }
+        if (index == 0) continue;
+
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);   // frame activity (scope probe)
+        if (overflow) {
+            g_diag.rx_overflow++;
+            send_reply(ST_OVERFLOW, NULL, 0);
+        } else if (index < 3 || !process_crc(command, index, true)) {
+            g_diag.rx_crc_err++;
+            send_reply(ST_BAD_CRC, NULL, 0);
+        } else {
+            g_diag.rx_frames++;
+            handle_frame(command, index);
+        }
+        index = 0;
+        overflow = false;
     }
 }
 /* USER CODE END 0 */
@@ -182,11 +319,9 @@ void Uart1Task(void *pvParameters) {
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  last_rx_time = 0; 
-
   uint32_t reset_cause = RCC->CSR;
   RCC->CSR |= RCC_CSR_RMVF;          // Сброс флагов сброса
-  //__HAL_RCC_CLEAR_RESET_FLAGS();   // Очистить флаги сброса
+  diag_boot(reset_cause);
 
   /* USER CODE END 1 */
 
@@ -213,14 +348,22 @@ int main(void)
   MX_SPI1_Init();
 
   /* USER CODE BEGIN 2 */
-  RCC->CSR |= RCC_CSR_RMVF;
-
-  log_printf("Rst:0x%08lX\r\n", reset_cause);
-  HAL_Delay(1000);
-  log_printf("Main started, time: %lu ms\r\n", HAL_GetTick());
+  log_printf("\r\nBOOT fw=%s rst=0x%08lX boot=%lu\r\n",
+             fw_version, reset_cause, g_diag.boot_count);
+  if (g_diag.fault_magic == DIAG_FAULT_MAGIC) {
+    log_printf("PREV_FAULT code=%lu pc=0x%08lX lr=0x%08lX cfsr=0x%08lX task=%s\r\n",
+               g_diag.error_code, g_diag.fault_pc, g_diag.fault_lr,
+               g_diag.fault_cfsr, (const char *)g_diag.fault_task);
+    g_diag.fault_magic = 0;   // reported once
+  }
 
   fram_cfg_setup(&cfgFRAM);
   fram_init(&fram,&cfgFRAM);
+  {
+    uint8_t sr[2];
+    int ok = fram_probe(&fram, sr);
+    log_printf("FRAM probe=%s sr=%02X/%02X\r\n", ok == 0 ? "OK" : "FAIL", sr[0], sr[1]);
+  }
   //log_printf("FRAM setup done\r\n");
 
   //fram_erase_all(&fram);
@@ -245,10 +388,12 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
-  uartQueue = xQueueCreate(40, sizeof(char));  // Очередь на 40 элементов
+  uartQueue = xQueueCreate(UART_BUF_SIZE, sizeof(uint8_t));
   if (uartQueue == NULL) {
        Error_Handler();// Ошибка создания очереди
   }
+  log_init();
+  uart1_start_rx();   // RX interrupt only after the queue exists
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -260,8 +405,7 @@ int main(void)
   LedTaskHandle = osThreadNew(LedTask, NULL, &LedTask_attributes);
 
   Uart1TaskHandle = osThreadNew(Uart1Task, NULL, &Uart1Task_attributes);
-  if (Uart1TaskHandle == NULL) {
-	uart1_put_ch('E');
+  if (LedTaskHandle == NULL || Uart1TaskHandle == NULL) {
     Error_Handler();
   }
   /* USER CODE END RTOS_THREADS */
@@ -400,8 +544,7 @@ static void MX_USART1_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART1_Init 2 */
-  // запускает прерывание для приёма 1 байта
-  HAL_UART_Receive_IT(&huart1, (uint8_t *)&uart1_rx_buf[0], 1);
+  // RX interrupt is armed later by uart1_start_rx(), after uartQueue is created
   /* USER CODE END USART1_Init 2 */
 
 }
@@ -467,16 +610,12 @@ static void MX_GPIO_Init(void)
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
   (void)xTask;
-  log_printf("!!! Stack overflow: %s\r\n", pcTaskName);
-  __disable_irq();
-  while (1) {}
+  diag_fault(DIAG_ERR_STACK_OVF, NULL, pcTaskName);
 }
 
 void vApplicationMallocFailedHook(void)
 {
-  log_printf("!!! Malloc failed\r\n");
-  __disable_irq();
-  while (1) {}
+  diag_fault(DIAG_ERR_MALLOC, NULL, NULL);
 }
 /* USER CODE END 4 */
 
@@ -491,44 +630,26 @@ void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
   /* Infinite loop */
-	printf_uart3("Default Task running...\r\n");
+  log_printf("Default Task running...\r\n");
   uint32_t diag_divider = 0;
   for (;;) {
 	vTaskDelay(pdMS_TO_TICKS(1000));
-	printf_uart3("Tick:%lu\r\n", HAL_GetTick());
+	g_diag.heartbeat++;
+	log_printf("Tick:%lu\r\n", HAL_GetTick());
 
-	/* Lightweight runtime diagnostics every 5 seconds. */
+	/* Lightweight runtime diagnostics every 5 seconds (one parsable line). */
 	if (++diag_divider >= 5) {
 		diag_divider = 0;
-
+		size_t total_heap = (size_t)configTOTAL_HEAP_SIZE;
 		size_t free_heap = xPortGetFreeHeapSize();
 		size_t min_heap = xPortGetMinimumEverFreeHeapSize();
-		size_t total_heap = (size_t)configTOTAL_HEAP_SIZE;
-		UBaseType_t dflt_stack = uxTaskGetStackHighWaterMark((TaskHandle_t)defaultTaskHandle);
-		UBaseType_t led_stack  = uxTaskGetStackHighWaterMark((TaskHandle_t)LedTaskHandle);
-		UBaseType_t uart_stack = uxTaskGetStackHighWaterMark((TaskHandle_t)Uart1TaskHandle);
-		size_t dflt_stack_b = ((size_t)dflt_stack) * sizeof(StackType_t);
-		size_t led_stack_b  = ((size_t)led_stack) * sizeof(StackType_t);
-		size_t uart_stack_b = ((size_t)uart_stack) * sizeof(StackType_t);
-		size_t dflt_total_b = (size_t)defaultTask_attributes.stack_size;
-		size_t led_total_b  = (size_t)LedTask_attributes.stack_size;
-		size_t uart_total_b = (size_t)Uart1Task_attributes.stack_size;
-		unsigned int heap_used_pct = (total_heap > 0U) ? (unsigned int)(((total_heap - free_heap) * 100U) / total_heap) : 0U;
-		unsigned int heap_peak_used_pct = (total_heap > 0U) ? (unsigned int)(((total_heap - min_heap) * 100U) / total_heap) : 0U;
-		unsigned int dflt_used_pct = (dflt_total_b > 0U) ? (unsigned int)(((dflt_total_b - dflt_stack_b) * 100U) / dflt_total_b) : 0U;
-		unsigned int led_used_pct  = (led_total_b > 0U) ? (unsigned int)(((led_total_b - led_stack_b) * 100U) / led_total_b) : 0U;
-		unsigned int uart_used_pct = (uart_total_b > 0U) ? (unsigned int)(((uart_total_b - uart_stack_b) * 100U) / uart_total_b) : 0U;
-
-		printf_uart3("HeapB F:%u Min:%u Tot:%u\r\n", (unsigned int)free_heap, (unsigned int)min_heap, (unsigned int)total_heap);
-		printf_uart3("HeapU now:%u%% peak:%u%%\r\n", heap_used_pct, heap_peak_used_pct);
-		printf_uart3("StkB free D:%u L:%u U:%u\r\n", (unsigned int)dflt_stack_b, (unsigned int)led_stack_b, (unsigned int)uart_stack_b);
-		printf_uart3("StkU %% D:%u L:%u U:%u\r\n", dflt_used_pct, led_used_pct, uart_used_pct);
+		log_printf("DIAG heap_free=%u heap_min=%u heap_total=%u stk_free D=%u L=%u U=%u rx=%lu crc_err=%lu uart_err=%lu\r\n",
+		           (unsigned)free_heap, (unsigned)min_heap, (unsigned)total_heap,
+		           stack_free_bytes(defaultTaskHandle), stack_free_bytes(LedTaskHandle),
+		           stack_free_bytes(Uart1TaskHandle),
+		           g_diag.rx_frames, g_diag.rx_crc_err, g_diag.uart_err);
 	}
   }
-  /*for(;;)
-  {
-    osDelay(1000);
-  }*/
   /* USER CODE END 5 */
 }
 
@@ -561,14 +682,9 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-
-  printf("ERROR DETECTED! \r\n");
-  HAL_Delay(1000);
-
-  while (1)
-  {
-  }
+  /* HAL_Delay() with IRQs disabled never returns, so the old message+delay
+   * hung forever. Record the error (readable over SWD) and stop here. */
+  diag_fault(DIAG_ERR_HANDLER, NULL, NULL);
   /* USER CODE END Error_Handler_Debug */
 }
 

@@ -3,11 +3,11 @@
 extern SPI_HandleTypeDef hspi1;
 
 void fram_cfg_setup(fram_cfg_t *cfg) {
-	cfg->sck_port = GPIOA;
+    cfg->sck_port = GPIOA;
     cfg->sck = GPIO_PIN_5;
-    cfg->sck_port = GPIOA;
+    cfg->miso_port = GPIOA;
     cfg->miso = GPIO_PIN_6;
-    cfg->sck_port = GPIOA;
+    cfg->mosi_port = GPIOA;
     cfg->mosi = GPIO_PIN_7;
     cfg->cs_port = GPIOA;  // for soft CS
     cfg->cs = GPIO_PIN_4;
@@ -73,9 +73,25 @@ void fram_write(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count)
     fram_write_disable(fram);
 }
 
+/* Was: uint8_t empty_data[FRAM_MEM_SIZE] on the stack (32 KB > 20 KB RAM) ->
+ * guaranteed stack overflow. Now writes zeros in small chunks. */
 void fram_erase_all(fram_t *fram) {
-    uint8_t empty_data[FRAM_MEM_SIZE] = {0};
-    fram_write(fram, 0x0000, empty_data, FRAM_MEM_SIZE);
+    uint8_t zeros[64] = {0};
+    for (uint32_t addr = 0; addr < FRAM_MEM_SIZE; addr += sizeof(zeros)) {
+        fram_write(fram, (uint16_t)addr, zeros, sizeof(zeros));
+    }
+}
+
+/* Presence check without touching memory contents: WREN must set the WEL bit
+ * (SR bit 1) and WRDI must clear it. With no chip / broken SPI wiring MISO
+ * reads constant 0x00 or 0xFF and this fails. sr_out gets {SR after WREN, SR after WRDI}. */
+int fram_probe(fram_t *fram, uint8_t sr_out[2]) {
+    fram_write_enable(fram);
+    uint8_t sr1 = fram_read_status(fram);
+    fram_write_disable(fram);
+    uint8_t sr2 = fram_read_status(fram);
+    if (sr_out) { sr_out[0] = sr1; sr_out[1] = sr2; }
+    return ((sr1 & 0x02) && !(sr2 & 0x02)) ? 0 : -1;
 }
 
 

@@ -7,9 +7,9 @@ Config: `Core/Inc/FreeRTOSConfig.h`.
 
 | Task | Entry | Priority | Stack, B | Period | Purpose |
 |------|-------|----------|----------|--------|---------|
-| Uart1Task | `Uart1Task` | AboveNormal (32) | 2048 | loop 3 ms | UART1 frames, commands |
-| defaultTask | `StartDefaultTask` | Normal (24) | 1024 | 1 s / 5 s | tick log, heap/stack diag |
-| LedTask | `LedTask` | Normal (24) | 512 | 1 s | toggle PC13 |
+| Uart1Task | `Uart1Task` | AboveNormal (32) | 2048 | blocks on queue | UART1 frames, commands |
+| defaultTask | `StartDefaultTask` | Normal (24) | 1024 | 1 s / 5 s | tick log, `g_diag.heartbeat`, heap/stack diag |
+| LedTask | `LedTask` | Normal (24) | 512 | 1 s | toggle PC13 (only in auto mode, ADR-011) |
 | Tmr Svc | kernel | 2 | 256 words | — | `configUSE_TIMERS=1`, таймеров нет |
 | IDLE | kernel | 0 | 128 words | — | — |
 
@@ -21,16 +21,18 @@ Config: `Core/Inc/FreeRTOSConfig.h`.
 
 | Object | Type | Producer → Consumer |
 |--------|------|---------------------|
-| `uartQueue` | queue 40 x `char` | USART1 ISR → Uart1Task |
-| `last_rx_time` | `volatile uint32_t` | ISR пишет, Uart1Task читает |
+| `uartQueue` | queue 100 x `uint8_t` | USART1 ISR → Uart1Task |
+| `log_mutex` | mutex | все задачи → USART3 (`log_printf`, `printf`) |
 
-Mutexes, semaphores, event groups, software timers: **нет**.
+Конец кадра: `xQueueReceive(uartQueue, .., 20 ms)` вернул timeout при
+непустом буфере. Очередь создаётся **до** `uart1_start_rx()` (RX IRQ).
+Semaphores, event groups, software timers: нет.
 
 ## Interrupts (NVIC, 4 bits, 0 = highest)
 
 | IRQ | Prio | Handler → callback | FreeRTOS API |
 |-----|------|--------------------|--------------|
-| USART1_IRQn | 5 | `HAL_UART_IRQHandler` → `HAL_UART_RxCpltCallback` (uart.c) | `xQueueSendFromISR`, `xTaskGetTickCountFromISR` |
+| USART1_IRQn | 5 | `HAL_UART_IRQHandler` → `HAL_UART_RxCpltCallback` / `HAL_UART_ErrorCallback` (uart.c) | `xQueueSendFromISR` |
 | TIM1_UP_IRQn | 15 | HAL timebase (`HAL_IncTick`) | нет |
 | SysTick, PendSV | 15 | FreeRTOS kernel | — |
 | USART3_IRQn | off | TX polling | — |
@@ -52,7 +54,9 @@ DMA: нет. Timers: TIM1 = HAL timebase (SysTick отдан FreeRTOS).
 ## Hooks
 
 `configCHECK_FOR_STACK_OVERFLOW = 2`, `configUSE_MALLOC_FAILED_HOOK = 1`.
-Оба hook в `main.c` (USER CODE 4): лог в UART3, `__disable_irq()`, вечный цикл.
+Оба hook в `main.c` (USER CODE 4) → `diag_fault()`: запись в `g_diag` (.noinit),
+строка `FAULT` в UART3 (polling), IRQ off, вечный цикл. Так же HardFault /
+MemManage / BusFault / UsageFault (`DIAG_FAULT_ENTRY` в USER CODE `stm32f1xx_it.c`).
 
 ## Rules
 

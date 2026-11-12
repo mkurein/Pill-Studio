@@ -16,3 +16,7 @@ arm-none-eabi-size Debug/primGPT.elf
 
 - Файлы проекта в CRLF — сохранять окончания строк при правках.
 - Факты о проекте держать в `docs/`, не в памяти чата: изменилось — обнови doc в том же commit.
+- macOS: `make` (arm-none-eabi-gcc из Homebrew) → `build/`. Проверка на плате —
+  сам гоняй `.venv/bin/python tools/hil.py test`, читай `log` / `diag` / `regs`
+  и исправляй прошивку, пока тест не PASS (не останавливаться на «собралось»).
+- GUI-студия: `studio/` (Rust, egui), `cargo run --release` в `studio/`.

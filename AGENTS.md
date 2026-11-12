@@ -22,6 +22,15 @@ make -C Debug all -j8
 Toolchain из STM32CubeIDE 1.17.0 должен быть в PATH
 (VS Code: `Ctrl+Shift+B` делает это сам). `Debug/makefile` генерирует CubeIDE.
 
+Без CubeIDE (macOS / Linux / CI): `make` в корне → `build/primGPT.elf` (ADR-013).
+
+## Verify on hardware
+
+`.venv/bin/python tools/hil.py test` — сборка, прошивка по SWD, ~30 проверок
+по UART1/UART3/SWD, exit 0 = PASS, отчёт `build/hil_report.json`.
+Отладка: `hil.py log 5`, `hil.py diag`, `hil.py regs`, `hil.py gpio`.
+Подробно: `docs/HIL_TESTING.md`.
+
 ## Hard rules
 
 - CubeMX-файлы (`main.c`, `stm32f1xx_hal_msp.c`, `stm32f1xx_it.c`):
@@ -36,6 +45,6 @@ Toolchain из STM32CubeIDE 1.17.0 должен быть в PATH
 ## Workflow
 
 Task → Plan (анализ, без правок) → Build (минимальная правка) →
-`make` → проверка на плате → `git --no-pager diff` → commit →
+`make` → `tools/hil.py test` на плате → `git --no-pager diff` → commit →
 отметить `[x]` в `docs/TODO.md`. Одна задача — один commit.
 Формат задачи: `docs/TASK_TEMPLATE.md`.

@@ -48,14 +48,7 @@ cargo run --release
 
 ## Сборка дистрибутива
 
-```bash
-python3 build_macos.py              # .app + .dmg → release/vX.Y.Z/
-python3 build_macos.py --universal  # arm64 + x86_64
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -File build_windows.ps1   # .zip → release\vX.Y.Z\
-```
+Команды для Windows (`setup.exe`) и macOS (`.dmg`): [BUILD.md](BUILD.md).
 
 ## Проверки
 

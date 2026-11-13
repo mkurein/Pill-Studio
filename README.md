@@ -9,7 +9,7 @@ Firmware для STM32F103C8 (Blue Pill) на FreeRTOS: бинарные кома
 2. Открыть **эту папку** в VS Code / Cursor.
 3. `Ctrl+Shift+B` — сборка, `F5` — отладка через ST-Link.
 
-Подробно: [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md).
+Подробно: [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md), отладка в Cursor — [docs/guides/CURSOR_BEGIN.md](docs/guides/CURSOR_BEGIN.md). Графическая студия — [studio/BUILD.md](studio/BUILD.md).
 
 ## Документация
 
@@ -26,6 +26,7 @@ Firmware для STM32F103C8 (Blue Pill) на FreeRTOS: бинарные кома
 Core/            исходники (main.c, uart.c, fram.c, crc16.c)
 Drivers/         STM32 HAL + CMSIS
 Middlewares/     FreeRTOS 10.0.1
+studio/          F103 Studio — отладочная программа на Rust (egui); сборка: studio/BUILD.md
 docs/            ядро документации (короткое) + guides/ notes/ lessons/
 primGPT.ioc      CubeMX (см. ADR-005 перед генерацией)
 ```

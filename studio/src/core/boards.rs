@@ -261,7 +261,7 @@ pub static BLACK_PILL: Profile = Profile {
     ],
     heap_total: 10 * 1024,
     spi_mem: "W25Q64 8 МБ",
-    repo: "github.com/mkurein/F411CE",
+    repo: "github.com/mkurein/Pill-Studio",
 };
 
 #[cfg(test)]

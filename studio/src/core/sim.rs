@@ -2,6 +2,7 @@
 //! `handle_frame`), produces the text log and plausible register values for
 //! the SWD views. Lets the studio be explored and tested without hardware.
 
+use super::faults::{Line, Step};
 use super::proto::*;
 use super::boards::{self, Family};
 use super::svd::Peripheral;
@@ -20,6 +21,7 @@ pub struct SimBoard {
     rx_frames: u32,
     rx_crc_err: u32,
     rx_overflow: u32,
+    uart_err: u32,
     fram_ok: u32,
     fram_fail: u32,
     heap_used_peak: u32,
@@ -53,6 +55,7 @@ impl SimBoard {
             rx_frames: 0,
             rx_crc_err: 0,
             rx_overflow: 0,
+            uart_err: 0,
             fram_ok: 0,
             fram_fail: 0,
             heap_used_peak: 0,
@@ -76,6 +79,7 @@ impl SimBoard {
         self.rx_frames = 0;
         self.rx_crc_err = 0;
         self.rx_overflow = 0;
+        self.uart_err = 0;
         self.fram_ok = 0;
         self.fram_fail = 0;
         self.led_manual = false;
@@ -113,7 +117,7 @@ impl SimBoard {
             if self.last_tick_s.is_multiple_of(5) {
                 let st = self.status();
                 self.pending_log.push(format!(
-                    "DIAG heap_free={} heap_min={} heap_total={} stk_free D={} L={} U={} rx={} crc_err={} uart_err=0",
+                    "DIAG heap_free={} heap_min={} heap_total={} stk_free D={} L={} U={} rx={} crc_err={} uart_err={}",
                     st.heap_free,
                     st.heap_min,
                     heap_total(),
@@ -121,7 +125,8 @@ impl SimBoard {
                     st.stack_free_led,
                     st.stack_free_uart,
                     st.rx_frames,
-                    st.rx_crc_err
+                    st.rx_crc_err,
+                    st.uart_err
                 ));
             }
         }
@@ -144,7 +149,7 @@ impl SimBoard {
             stack_free_uart: (1_404 - (self.rx_frames.min(40) * 2)) as u16,
             rx_frames: self.rx_frames,
             rx_crc_err: self.rx_crc_err,
-            uart_err: 0,
+            uart_err: self.uart_err,
             queue_full: 0,
             fram_ok: self.fram_ok,
             fram_fail: self.fram_fail,
@@ -160,6 +165,55 @@ impl SimBoard {
     }
 
     /// One request frame in, reply bytes out (same rules as Uart1Task).
+    /// A transmission plan with pauses and line faults, received the way
+    /// USART1 + Uart1Task do it: 8N1 at 38400, a gap of 20 ms or more ends
+    /// the frame, framing/parity errors count in `uart_err`.
+    pub fn xfer_plan(&mut self, steps: &[Step]) -> Vec<u8> {
+        let mut buf: Vec<u8> = vec![];
+        let mut out = vec![];
+        let mut line = Line::Normal;
+        for st in steps {
+            match st {
+                Step::Line(l) => line = *l,
+                Step::Bytes(b) => match line {
+                    Line::Normal | Line::TwoStop => buf.extend(b),
+                    // the parity bit lands on the stop bit: 0 there = framing
+                    // error, the byte itself still arrives
+                    Line::ParityEven | Line::ParityOdd => {
+                        let odd = line == Line::ParityOdd;
+                        for &x in b {
+                            if (x.count_ones() % 2 == 1) == odd {
+                                self.uart_err += 1;
+                            }
+                            buf.push(x);
+                        }
+                    }
+                    Line::SevenBits => buf.extend(b.iter().map(|x| x | 0x80)),
+                    Line::Baud(baud) => {
+                        // wrong speed: other bytes and framing errors
+                        let n = (b.len() as u64 * baud as u64 / PROTO_BAUD as u64).max(1) as usize;
+                        self.uart_err += (b.len() / 2).max(1) as u32;
+                        buf.extend(b.iter().cycle().take(n).map(|x| x.rotate_left(3) ^ 0xA5));
+                    }
+                },
+                Step::Pause(ms) => {
+                    if *ms >= 20 && !buf.is_empty() {
+                        out.extend(self.xfer(&buf));
+                        buf.clear();
+                    }
+                }
+                Step::Break(_) => {
+                    self.uart_err += 1;
+                    buf.push(0);
+                }
+            }
+        }
+        if !buf.is_empty() {
+            out.extend(self.xfer(&buf));
+        }
+        out
+    }
+
     pub fn xfer(&mut self, req: &[u8]) -> Vec<u8> {
         self.act_pin = !self.act_pin;
         if req.len() > UART_BUF_SIZE {
@@ -307,6 +361,21 @@ impl SimBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reliability_cases_on_the_virtual_board() {
+        let mut b = SimBoard::new();
+        for c in crate::core::faults::cases() {
+            let before = b.status();
+            let rx = b.xfer_plan(&c.steps);
+            assert!(c.expect.met(&rx), "{}: {}", c.title, crate::core::faults::summary(&rx));
+            // still alive, same boot
+            let r = b.xfer(&frame(&[CMD_STATUS]));
+            assert_eq!(r[1], ST_OK, "{}", c.title);
+            assert_eq!(b.status().boot_count, before.boot_count);
+        }
+        assert!(b.status().uart_err > 0);
+    }
 
     fn cmd(s: &mut SimBoard, body: &[u8]) -> Reply {
         match decode_reply(&s.xfer(&frame(body))) {

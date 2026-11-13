@@ -66,6 +66,14 @@ heap_free, heap_min` (u32) · `stack_free default/led/uart` (u16, байты) ·
 | `02 00 00 D0` | FRAM test | `01 00 4B 55 52 45 49 4E 00 ..` |
 | `70 01 E5 B1` | bad CRC | `01 E1 ..` |
 
+## Сбои кадра и линии
+
+Плата читает 8N1 38400, кадр кончается паузой ≥ 20 мс, буфер 100 B. На ошибку
+кадра плата отвечает статусом (BAD_CRC, UNKNOWN_CMD, BAD_ARG, OVERFLOW), сбой
+линии (чётность, скорость, BREAK) считает в `uart_err` и продолжает приём.
+Все 20 случаев теста надёжности, что каждый портит и как проводить —
+[../UART_TESTING.md](../UART_TESTING.md).
+
 ## Log UART (115200, TX only): USART3 PB10 на Blue Pill, USART6 PA11 на Black Pill
 
 `BOOT fw=<ver> rst=0x<CSR> boot=<n>` → `[PREV_FAULT ...]` →

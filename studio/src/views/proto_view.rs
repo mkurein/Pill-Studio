@@ -1,8 +1,10 @@
-//! UART1 protocol console: command catalogue, frame builder with live CRC,
-//! fault injection, stress test, transaction log with byte-level decoding and
-//! the board's reaction (UART3 lines right after the command).
+//! UART1 protocol console: command catalogue, hand-typed frames (with, without
+//! or with a broken CRC, wrong line format, gaps, repeats), the reliability
+//! test, stress test, transaction log with byte-level decoding and the
+//! board's reaction (log lines right after the command).
 
 use crate::app::{Act, Shared};
+use crate::core::faults::{self, CrcMode, Line};
 use crate::core::proto::{self, *};
 use crate::fmt;
 use crate::theme::Pal;
@@ -16,11 +18,25 @@ pub struct St {
     selected: Option<u64>,
     stress_n: u32,
     follow: bool,
+    crc: CrcMode,
+    line: Line,
+    gap_ms: u32,
+    repeat: u32,
 }
 
 impl Default for St {
     fn default() -> Self {
-        St { hex: "70 01".into(), show_polls: false, selected: None, stress_n: 50, follow: true }
+        St {
+            hex: "70 01".into(),
+            show_polls: false,
+            selected: None,
+            stress_n: 50,
+            follow: true,
+            crc: CrcMode::Add,
+            line: Line::Normal,
+            gap_ms: 0,
+            repeat: 1,
+        }
     }
 }
 
@@ -63,7 +79,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             }
         });
     }
-    egui::SidePanel::left("proto_left").resizable(true).default_width(380.0).frame(egui::Frame::new()).show_inside(ui, |ui| {
+    egui::SidePanel::left("proto_left").resizable(true).default_width(460.0).frame(egui::Frame::new()).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().id_salt("proto_l").show(ui, |ui| {
             card(ui, &p, "Команды", |ui| {
                 egui::Grid::new("cmds").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -77,59 +93,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 });
             });
             ui.add_space(8.0);
-            card(ui, &p, "Конструктор кадра", |ui| {
-                hint(ui, &p, "Введите CMD и аргументы в hex, CRC посчитается сама.");
-                ui.add(egui::TextEdit::singleline(&mut st.hex).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
-                match parse_hex(&st.hex) {
-                    Ok(b) if !b.is_empty() => {
-                        let f = frame(&b);
-                        ui.label(RichText::new(format!("на провод: {}", proto::hex(&f))).monospace().color(p.accent));
-                        ui.label(RichText::new(describe_request(&b)).small().color(p.fg2));
-                        ui.horizontal(|ui| {
-                            if ui.button("Отправить с CRC").clicked() {
-                                sh.send(b.clone());
-                            }
-                            if ui.button("Отправить как есть").on_hover_text("без добавления CRC — для своих экспериментов").clicked() {
-                                sh.job(Job::Send { body: b, raw: true });
-                            }
-                        });
-                    }
-                    Ok(_) => hint(ui, &p, "пусто"),
-                    Err(e) => {
-                        ui.label(RichText::new(e).color(p.err));
-                    }
-                }
-            });
+            card(ui, &p, "Свой кадр (hex)", |ui| builder(ui, sh, st));
             ui.add_space(8.0);
-            card(ui, &p, "Проверка обработки ошибок", |ui| {
-                hint(ui, &p, "Как прошивка реагирует на испорченные кадры — должна отвечать кодом ошибки и не зависать.");
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Испорченная CRC").clicked() {
-                        let mut f = frame(&[CMD_PING]);
-                        f[2] ^= 0x55;
-                        sh.job(Job::Send { body: f, raw: true });
-                    }
-                    if ui.button("Кадр 150 байт").clicked() {
-                        sh.job(Job::Send { body: (0..150u8).collect(), raw: true });
-                    }
-                    if ui.button("Неизвестная команда").clicked() {
-                        sh.send(vec![0x55]);
-                    }
-                    if ui.button("Неверный аргумент").clicked() {
-                        sh.send(vec![CMD_LED, 9]);
-                    }
-                    if ui.button("Один байт").clicked() {
-                        sh.job(Job::Send { body: vec![0x70], raw: true });
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Стресс:");
-                    ui.add(egui::DragValue::new(&mut st.stress_n).range(1..=1000).suffix(" PING"));
-                    if ui.button("Запустить").clicked() {
-                        sh.job(Job::Stress(st.stress_n));
-                    }
-                });
-            });
+            card(ui, &p, "Тест надёжности", |ui| robust(ui, sh, st));
         });
     });
     egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin { left: 12, ..Default::default() })).show_inside(ui, |ui| {
@@ -216,7 +182,25 @@ fn detail(ui: &mut egui::Ui, sh: &Shared, t: &Txn) {
     }
     ui.label(RichText::new("Ответ").color(p.fg2));
     let m = t.rx.len();
-    if m >= 4 {
+    let (replies, junk) = faults::split_replies(&t.rx);
+    if replies.len() > 1 || (junk > 0 && !replies.is_empty()) {
+        hint(ui, &p, &format!("пришло ответов: {} — {}", replies.len(), faults::summary(&t.rx)));
+        for (k, r) in replies.iter().take(12).enumerate() {
+            let crc = frame(&[&[r.id, r.status][..], &r.payload].concat());
+            let n = crc.len();
+            bytes_row(
+                ui,
+                &p,
+                &[
+                    ("№", &[k as u8 + 1][..], p.muted),
+                    ("ID", &crc[..1], p.clk),
+                    ("статус", &crc[1..2], if r.status == 0 { p.ok } else { p.err }),
+                    ("данные", &crc[2..n - 2], p.sig),
+                    ("CRC", &crc[n - 2..], p.muted),
+                ],
+            );
+        }
+    } else if m >= 4 {
         bytes_row(ui, &p, &[("ID", &t.rx[..1], p.clk), ("статус", &t.rx[1..2], if t.rx[1] == 0 { p.ok } else { p.err }), ("данные", &t.rx[2..m - 2], p.sig), ("CRC", &t.rx[m - 2..], p.muted)]);
         let payload = &t.rx[2..m - 2];
         let cmd = t.tx.first().copied();
@@ -258,14 +242,179 @@ fn detail(ui: &mut egui::Ui, sh: &Shared, t: &Txn) {
         bytes_row(ui, &p, &[("байты", &t.rx, p.err)]);
     }
     ui.add_space(6.0);
-    ui.label(RichText::new("Реакция платы в логе UART3 (1.5 с после команды)").color(p.fg2));
+    let log_uart = crate::core::boards::cur().log_uart.replace("USART", "UART");
+    ui.label(RichText::new(format!("Реакция платы в логе {log_uart} (1.5 с после команды)")).color(p.fg2));
     let lines: Vec<_> = sh.lines.iter().filter(|l| l.t >= t.t - 0.05 && l.t <= t.t + 1.5).collect();
     if sh.st.log.is_none() {
-        hint(ui, &p, "Лог UART3 не подключён.");
+        hint(ui, &p, &format!("Лог {log_uart} не подключён."));
     } else if lines.is_empty() {
         hint(ui, &p, "Новых строк нет (для LED/PING это нормально; FRAM и RESET пишут в лог).");
     }
     for l in lines {
         ui.label(RichText::new(format!("{}  {}", fmt::clock(l.t), l.text)).monospace().small());
     }
+}
+
+/// Hand-typed frame: any bytes, CRC added / left out / broken, optional
+/// wrong line format, gaps between bytes and repeats.
+fn builder(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
+    let p = sh.pal;
+    hint(ui, &p, "Любые байты в hex — известная команда, новая или заведомо ошибочная.");
+    ui.add(egui::TextEdit::singleline(&mut st.hex).font(egui::TextStyle::Monospace).hint_text("70 01").desired_width(f32::INFINITY));
+    ui.horizontal_wrapped(|ui| {
+        ui.label("CRC:");
+        ui.radio_value(&mut st.crc, CrcMode::Add, "добавить").on_hover_text("CRC16/MODBUS считается и дописывается (LSB первым)");
+        ui.radio_value(&mut st.crc, CrcMode::AsIs, "без CRC").on_hover_text("байты уходят ровно как введены — например, свой CRC");
+        ui.radio_value(&mut st.crc, CrcMode::Corrupt, "испортить").on_hover_text("верная CRC, у младшего байта инвертированы биты 0x55");
+    });
+    egui::Grid::new("manual_opts").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+        ui.label("Линия:");
+        egui::ComboBox::from_id_salt("manual_line").width(230.0).selected_text(st.line.label()).show_ui(ui, |ui| {
+            for l in Line::ALL {
+                ui.selectable_value(&mut st.line, l, l.label());
+            }
+        });
+        ui.end_row();
+        ui.label("Пауза между байтами:");
+        ui.add(egui::DragValue::new(&mut st.gap_ms).range(0..=200).suffix(" мс"))
+            .on_hover_text("0 — подряд. От 20 мс плата считает паузу концом кадра и режет его.");
+        ui.end_row();
+        ui.label("Повторить:");
+        ui.add(egui::DragValue::new(&mut st.repeat).range(1..=200).suffix(" раз")).on_hover_text("кадры через 30 мс, не дожидаясь ответа");
+        ui.end_row();
+    });
+    match parse_hex(&st.hex) {
+        Ok(b) if !b.is_empty() => {
+            let wire = faults::build(&b, st.crc);
+            ui.label(RichText::new(format!("на провод: {}", proto::hex(&wire))).monospace().color(p.accent));
+            let mut notes = vec![];
+            match st.crc {
+                CrcMode::Add => notes.push(describe_request(&b)),
+                CrcMode::AsIs => notes.push(if wire.len() >= 3 && crc16(&wire) == 0 { "CRC в байтах верна".into() } else { "без CRC — ожидается BAD_CRC".into() }),
+                CrcMode::Corrupt => notes.push("испорченная CRC — ожидается BAD_CRC".into()),
+            }
+            if wire.len() > UART_BUF_SIZE {
+                notes.push(format!("{} Б > буфера {} — ожидается OVERFLOW", wire.len(), UART_BUF_SIZE));
+            }
+            if st.line != Line::Normal {
+                notes.push(format!("формат {}: плата читает 8N1 38400", st.line.short()));
+            }
+            if st.gap_ms >= 20 && wire.len() > 1 {
+                notes.push("пауза ≥ 20 мс — плата увидит кадр по частям".into());
+            }
+            ui.label(RichText::new(notes.join(" · ")).small().color(p.fg2));
+            if ui.add(egui::Button::new("Отправить")).clicked() {
+                let steps = faults::manual_plan(&wire, st.line, st.gap_ms, st.repeat);
+                if faults::is_plain(&steps) && st.repeat == 1 {
+                    if st.crc == CrcMode::Add {
+                        sh.send(b);
+                    } else {
+                        sh.job(Job::Send { body: wire, raw: true });
+                    }
+                } else {
+                    let mut label = format!("вручную {} Б", wire.len());
+                    if st.line != Line::Normal {
+                        label += &format!(" · {}", st.line.short());
+                    }
+                    if st.gap_ms > 0 {
+                        label += &format!(" · пауза {} мс", st.gap_ms);
+                    }
+                    if st.repeat > 1 {
+                        label += &format!(" · ×{}", st.repeat);
+                    }
+                    sh.job(Job::Plan { label, steps });
+                }
+            }
+        }
+        Ok(_) => hint(ui, &p, "пусто"),
+        Err(e) => {
+            ui.label(RichText::new(e).color(p.err));
+        }
+    }
+}
+
+/// Reliability test: bad frames and line faults, each followed by STATUS.
+fn robust(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
+    let p = sh.pal;
+    hint(
+        ui,
+        &p,
+        "Испорченные кадры и сбои линии. После каждого случая — STATUS: плата должна ответить, не перезагрузиться и посчитать ошибку.",
+    );
+    let cases = faults::cases();
+    let running = sh.st.robust_left > 0;
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!running, egui::Button::new(format!("▶ Прогнать все {} случаев", cases.len()))).clicked() {
+            sh.job(Job::Robust((0..cases.len()).collect()));
+        }
+        if running {
+            if ui.button("Стоп").clicked() {
+                sh.job(Job::RobustStop);
+            }
+            ui.spinner();
+            ui.label(RichText::new(format!("осталось {}", sh.st.robust_left)).small().color(p.muted));
+        }
+    });
+    let rows = &sh.st.robust;
+    if !rows.is_empty() {
+        let bad = rows.iter().filter(|r| !r.ok).count();
+        let dead = rows.iter().filter(|r| !r.alive).count();
+        let (text, c) = if dead > 0 {
+            (format!("плата не ответила или перезагрузилась: {dead}"), p.err)
+        } else if bad > 0 {
+            (format!("пройдено {} из {}, плата жива", rows.len() - bad, rows.len()), p.warn)
+        } else {
+            (format!("пройдено {} из {}, плата жива", rows.len(), rows.len()), p.ok)
+        };
+        ui.label(RichText::new(text).strong().color(c));
+        if let Some(t) = &sh.st.robust_total {
+            hint(ui, &p, &format!("за прогон: {t}"));
+        }
+    }
+    ui.add_space(4.0);
+    egui::Grid::new("robust_grid").num_columns(4).striped(true).spacing([8.0, 3.0]).show(ui, |ui| {
+        for hdr in ["случай", "ожидание", "ответ · счётчики", ""] {
+            ui.label(RichText::new(hdr).small().strong().color(p.fg2));
+        }
+        ui.end_row();
+        for (i, c) in cases.iter().enumerate() {
+            let tip = format!("{}\n{}", c.what, proto::hex(&faults::tx_bytes(&c.steps)));
+            if ui.add_enabled(!running, egui::Button::new(RichText::new(c.title).small())).on_hover_text(tip).clicked() {
+                sh.job(Job::Robust(vec![i]));
+            }
+            ui.label(RichText::new(c.expect.label()).small().color(p.fg2));
+            match rows.iter().find(|r| r.case == i) {
+                Some(r) => {
+                    ui.label(RichText::new(format!("{} · {}", r.got, r.delta)).small().monospace().color(if r.ok { p.fg } else { p.err }));
+                    let mark = if !r.alive {
+                        RichText::new("✗ плата").color(p.err)
+                    } else if r.ok {
+                        RichText::new("✓").color(p.ok)
+                    } else {
+                        RichText::new("≠").color(p.warn)
+                    };
+                    ui.label(mark.strong()).on_hover_text(if !r.alive {
+                        "после случая STATUS не ответил или boot_count изменился"
+                    } else if r.ok {
+                        "ответ как ожидалось, плата жива"
+                    } else {
+                        "ответ не такой, как ожидалось, но плата жива"
+                    });
+                }
+                None => {
+                    ui.label("");
+                    ui.label("");
+                }
+            }
+            ui.end_row();
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("Стресс:");
+        ui.add(egui::DragValue::new(&mut st.stress_n).range(1..=1000).suffix(" PING"));
+        if ui.add_enabled(!running, egui::Button::new("Запустить")).clicked() {
+            sh.job(Job::Stress(st.stress_n));
+        }
+    });
 }

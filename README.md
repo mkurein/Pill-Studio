@@ -10,7 +10,8 @@
 На обеих платах одно и то же: бинарные команды по USART1 (38400, CRC16-MODBUS),
 внешняя SPI-память (FRAM на Blue Pill, W25Q64 на Black Pill), текстовый лог
 (USART3 / USART6, 115200), запись сбоев `g_diag`, автотест `tools/hil.py`.
-Протокол общий — [docs/PROTOCOL.md](docs/PROTOCOL.md). Различия плат —
+Протокол общий — [docs/PROTOCOL.md](docs/PROTOCOL.md); как проверять приём по UART1
+(команды, испорченные кадры, сбои линии) — [UART_TESTING.md](UART_TESTING.md). Различия плат —
 [docs/HARDWARE.md](docs/HARDWARE.md) и [docs/PINOUT.md](docs/PINOUT.md).
 
 ![Pill Studio](studio/docs/screens/01_overview_dark.jpg)

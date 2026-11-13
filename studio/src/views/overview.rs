@@ -189,19 +189,20 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             });
             card(&mut cols[1], &p, "Быстрые действия", |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("💡 LED вкл").clicked() {
+                    let manual = "Ручной режим: LedTask перестаёт мигать, светодиод держит это состояние. Остальные задачи работают. Вернуть мигание — «LED мигает».";
+                    if ui.button("💡 LED вкл").on_hover_text(manual).clicked() {
                         sh.send(vec![CMD_LED, 1]);
                     }
-                    if ui.button("LED выкл").clicked() {
+                    if ui.button("LED выкл").on_hover_text(manual).clicked() {
                         sh.send(vec![CMD_LED, 0]);
                     }
-                    if ui.button("LED мигает").clicked() {
+                    if ui.button("LED мигает").on_hover_text("Авто: LedTask снова переключает светодиод раз в секунду.").clicked() {
                         sh.send(vec![CMD_LED, 2]);
                     }
-                    if ui.button("FRAM тест").clicked() {
+                    if ui.button("FRAM тест").on_hover_text("Запись 64 байт во внешнюю SPI-память, чтение и сравнение, потом восстановление. На W25Q64 стирание сектора занимает десятки мс.").clicked() {
                         sh.send(vec![CMD_FRAM, 2]);
                     }
-                    if ui.button("Сброс платы").clicked() {
+                    if ui.button("Сброс платы").on_hover_text("Плата отвечает и перезапускается (NVIC_SystemReset): в логе BOOT, светодиод снова мигает.").clicked() {
                         sh.send(vec![CMD_RESET]);
                     }
                 });
@@ -209,7 +210,16 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     let color = if t.ok { p.ok } else { p.err };
                     ui.label(RichText::new(format!("{} — {}", t.label, t.verdict)).small().color(color));
                 } else if !sh.uart_ok() {
-                    hint(ui, &p, "Сначала подключите UART1 (COM4). Кнопки шлют команды на плату и пишут результат этой строкой.");
+                    hint(ui, &p, "Сначала подключите UART1. Кнопки шлют команды на плату и пишут результат этой строкой.");
+                }
+                if sh.st.status.as_ref().is_some_and(|s| s.led_manual != 0) {
+                    ui.label(
+                        RichText::new("Светодиод в ручном режиме: мигание выключено, программа и задачи работают дальше. «LED мигает» — вернуть мигание.")
+                            .small()
+                            .color(p.warn),
+                    );
+                } else {
+                    hint(ui, &p, "«LED вкл» и «LED выкл» включают ручной режим: светодиод перестаёт мигать, но программа не останавливается.");
                 }
                 if sh.st.proto.as_deref() == Some("виртуальная плата") {
                     let mut fram = sh.st.sim_fram;
@@ -236,9 +246,12 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 para(
                     ui,
                     &p,
-                    "Как это работает: UART1 — команды и ответы с CRC16, UART3 — текстовый лог прошивки, \
-                     SWD — чтение памяти и регистров прямо во время работы. Вместе они показывают реакцию платы \
-                     на каждую команду: ответ, строку в логе и изменение регистра.",
+                    &format!(
+                        "Как это работает: UART1 — команды и ответы с CRC16, {} — текстовый лог прошивки, \
+                         SWD — чтение памяти и регистров прямо во время работы. Вместе они показывают реакцию платы \
+                         на каждую команду: ответ, строку в логе и изменение регистра.",
+                        crate::core::boards::cur().log_uart.replace("USART", "UART")
+                    ),
                 );
             });
         });

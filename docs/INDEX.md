@@ -18,6 +18,7 @@
 | [TODO.md](TODO.md) | 1000 | задачи T1..T11 |
 | [TASK_TEMPLATE.md](TASK_TEMPLATE.md) | 320 | формат задачи для Qwen |
 | [HIL_TESTING.md](HIL_TESTING.md) | ~900 | автотест на плате: `tools/hil.py`, подключение обеих плат |
+| [../UART_TESTING.md](../UART_TESTING.md) | ~3500 | тесты UART1 в Pill Studio: свой кадр, 20 сбоев кадра и линии, как проводить |
 
 ## Source
 

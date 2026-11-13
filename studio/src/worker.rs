@@ -5,6 +5,7 @@
 use crate::core::config::Config;
 use crate::core::debug::{self, AsmLine, StepKind};
 use crate::core::elf::{self, Elf};
+use crate::core::faults::{self, Step};
 use crate::core::link::{LogPort, ProtoPort};
 use crate::core::boards;
 use crate::core::openocd::{OcdConfig, OpenOcd};
@@ -13,7 +14,7 @@ use crate::core::sim::SimBoard;
 use crate::core::svd::Peripheral;
 use crate::core::{Diag, DIAG_WORDS};
 use eframe::egui;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,6 +42,11 @@ pub enum Job {
     Poll(bool),
     PollMs(u64),
     Stress(u32),
+    /// Bytes with pauses, line format changes and BREAK (fault injection).
+    Plan { label: String, steps: Vec<Step> },
+    /// Run these cases of `faults::cases()`, each followed by STATUS.
+    Robust(Vec<usize>),
+    RobustStop,
     SwdOpen(OcdConfig),
     SwdSim,
     SwdClose,
@@ -124,6 +130,49 @@ pub struct State {
     pub job_ok: Option<bool>,
     pub ocd_console: Vec<String>,
     pub sim_fram: bool,
+    /// Results of the reliability test, in the order run.
+    pub robust: Vec<RobustRow>,
+    /// Cases still queued (progress while the test runs).
+    pub robust_left: usize,
+    /// Counter changes over the whole run.
+    pub robust_total: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RobustRow {
+    pub case: usize,
+    pub got: String,
+    /// What changed in STATUS: "crc +1, uart +2".
+    pub delta: String,
+    pub alive: bool,
+    pub ok: bool,
+}
+
+/// Counter changes between two STATUS replies, only the ones that moved.
+/// `b` must be the STATUS read right after the case.
+pub fn status_delta(a: &Status, b: &Status) -> String {
+    let d = |x: u32, y: u32| y.wrapping_sub(x) as i64;
+    let mut v = vec![];
+    for (name, x, y) in [
+        // `b` itself is a STATUS reply, so its own frame is not counted
+        ("кадров", a.rx_frames.wrapping_add(1), b.rx_frames),
+        ("crc", a.rx_crc_err, b.rx_crc_err),
+        ("uart", a.uart_err, b.uart_err),
+        ("очередь", a.queue_full, b.queue_full),
+    ] {
+        let n = d(x, y);
+        if n != 0 {
+            v.push(format!("{name} +{n}"));
+        }
+    }
+    if b.boot_count != a.boot_count {
+        v.push("ПЕРЕЗАГРУЗКА".into());
+    }
+    if v.is_empty() {
+        "—".into()
+    } else {
+        v.join(", ")
+    }
 }
 
 impl State {
@@ -204,6 +253,10 @@ struct Eng {
     /// else (Cursor over GDB) stepped the core.
     last_halt_pc: Option<u32>,
     last_state_poll: Instant,
+    /// Reliability cases still to run and STATUS before the next one.
+    robust_q: VecDeque<usize>,
+    robust_prev: Option<Status>,
+    robust_first: Option<Status>,
 }
 
 impl Worker {
@@ -237,6 +290,9 @@ impl Worker {
                     last_jump: None,
                     last_halt_pc: None,
                     last_state_poll: Instant::now(),
+                    robust_q: VecDeque::new(),
+                    robust_prev: None,
+                    robust_first: None,
                 };
                 for p in elf::candidates(&project) {
                     if p.exists() {
@@ -347,7 +403,9 @@ impl Eng {
             self.st.log = None;
         }
         // STATUS polling
-        if self.st.polling && self.proto.is_some() && self.last_poll.elapsed() >= Duration::from_millis(self.st.poll_ms) {
+        if !self.robust_q.is_empty() {
+            self.robust_step();
+        } else if self.st.polling && self.proto.is_some() && self.last_poll.elapsed() >= Duration::from_millis(self.st.poll_ms) {
             self.last_poll = Instant::now();
             self.transact(vec![CMD_STATUS], false, true);
         }
@@ -510,6 +568,110 @@ impl Eng {
         self.next_id += 1;
         self.out.txns.push(Txn { id, t, tx, rx, label, verdict, ok, ms, poll });
         reply
+    }
+
+    /// A fault-injection plan on USART1; every reply that came back goes into
+    /// one journal row.
+    fn transact_plan(&mut self, label: String, steps: &[Step], toast: bool) -> Option<Vec<u8>> {
+        let tx = faults::tx_bytes(steps);
+        let t = self.now();
+        let t1 = Instant::now();
+        let rx = match self.proto.as_mut()? {
+            Proto::Sim => {
+                std::thread::sleep(Duration::from_millis(3 + tx.len() as u64 / 4 + faults::wait_ms(steps)));
+                self.sim.xfer_plan(steps)
+            }
+            Proto::Serial(p) => match p.xfer_plan(steps, Duration::from_millis(700 + faults::wait_ms(steps))) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.toast(Tone::Err, format!("UART1: {}", e));
+                    return None;
+                }
+            },
+        };
+        let ms = t1.elapsed().as_secs_f64() * 1000.0;
+        let (replies, junk) = faults::split_replies(&rx);
+        let ok = !replies.is_empty() && junk == 0 && replies.iter().all(|r| r.status == ST_OK);
+        let verdict = faults::summary(&rx);
+        if toast && !ok {
+            self.toast(Tone::Warn, format!("{label}: {verdict}"));
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.out.txns.push(Txn { id, t, tx, rx: rx.clone(), label, verdict, ok, ms, poll: false });
+        Some(rx)
+    }
+
+    /// STATUS without a journal row; None when the board does not answer.
+    fn status_now(&mut self) -> Option<Status> {
+        let r = self.transact(vec![CMD_STATUS], false, true)?;
+        if r.status != ST_OK {
+            return None;
+        }
+        Status::decode(&r.payload)
+    }
+
+    /// One reliability case: send it, then STATUS proves the board is alive
+    /// and shows which counters moved.
+    fn robust_step(&mut self) {
+        let Some(i) = self.robust_q.pop_front() else { return };
+        self.st.robust_left = self.robust_q.len();
+        if self.proto.is_none() {
+            self.robust_q.clear();
+            self.st.robust_left = 0;
+            return;
+        }
+        if self.robust_prev.is_none() {
+            self.robust_prev = self.status_now();
+            self.robust_first = self.robust_prev;
+        }
+        let cases = faults::cases();
+        let Some(c) = cases.get(i) else { return };
+        let rx = self.transact_plan(format!("тест: {}", c.title), &c.steps, false).unwrap_or_default();
+        let expected = c.expect.met(&rx);
+        // let the board finish the frame (20 ms gap) and any reply
+        std::thread::sleep(Duration::from_millis(40));
+        let after = self.status_now().or_else(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            self.status_now()
+        });
+        let rebooted = matches!((&self.robust_prev, &after), (Some(a), Some(b)) if a.boot_count != b.boot_count);
+        let delta = match (&self.robust_prev, &after) {
+            (Some(a), Some(b)) => status_delta(a, b),
+            _ => "—".into(),
+        };
+        let alive = after.is_some() && !rebooted;
+        let row = RobustRow {
+            case: i,
+            got: faults::summary(&rx),
+            delta,
+            alive,
+            ok: expected && alive,
+        };
+        self.st.robust.retain(|r| r.case != i);
+        self.st.robust.push(row);
+        if after.is_some() {
+            self.robust_prev = after;
+        }
+        if self.robust_q.is_empty() {
+            let rows = &self.st.robust;
+            let bad = rows.iter().filter(|r| !r.ok).count();
+            let dead = rows.iter().filter(|r| !r.alive).count();
+            self.st.robust_total = match (&self.robust_first, &self.robust_prev) {
+                (Some(a), Some(b)) => Some(status_delta(a, b)),
+                _ => None,
+            };
+            self.robust_prev = None;
+            self.robust_first = None;
+            let msg = if dead > 0 {
+                format!("Тест надёжности: плата перестала отвечать или перезагрузилась в {dead} случаях")
+            } else if bad > 0 {
+                format!("Тест надёжности: {} из {} случаев ответили не так, как ожидалось; плата жива", bad, rows.len())
+            } else {
+                format!("Тест надёжности: все {} случаев пройдены, плата жива", rows.len())
+            };
+            self.toast(if dead > 0 { Tone::Err } else if bad > 0 { Tone::Warn } else { Tone::Ok }, msg);
+        }
     }
 
     fn apply_reply(&mut self, body: &[u8], r: &Reply, raw: bool) {
@@ -914,6 +1076,32 @@ impl Eng {
                 if on && self.proto.is_none() {
                     self.toast(Tone::Warn, "Сначала подключите UART1");
                 }
+            }
+            Job::Plan { label, steps } => {
+                if self.proto.is_none() {
+                    self.toast(Tone::Warn, "UART1 не подключён");
+                } else {
+                    self.transact_plan(label, &steps, true);
+                }
+            }
+            Job::Robust(which) => {
+                if self.proto.is_none() {
+                    self.toast(Tone::Warn, "UART1 не подключён");
+                    return;
+                }
+                if which.len() > 1 {
+                    self.st.robust.clear();
+                    self.st.robust_total = None;
+                }
+                self.robust_prev = None;
+                self.robust_q = which.into();
+                self.st.robust_left = self.robust_q.len();
+            }
+            Job::RobustStop => {
+                self.robust_q.clear();
+                self.st.robust_left = 0;
+                self.robust_prev = None;
+                self.robust_first = None;
             }
             Job::PollMs(ms) => self.st.poll_ms = ms.max(200),
             Job::Stress(n) => {

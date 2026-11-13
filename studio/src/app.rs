@@ -247,6 +247,11 @@ impl App {
                     if chip(ui, &p, "SWD", swd.as_deref().unwrap_or("нет"), swd.is_some()).clicked() {
                         sh.act(Act::Go(View::Debug));
                     }
+                    if sh.st.sim_running()
+                        && ui.button(RichText::new("Остановить симуляцию").color(p.err)).clicked()
+                    {
+                        sh.job(Job::SimStop);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let dark = sh.cfg.dark;
                         if ui.button(if dark { "☀ Светлая" } else { "☾ Тёмная" }).clicked() {

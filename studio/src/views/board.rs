@@ -178,11 +178,11 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         cv.rect(x + 2.0, 152.0, 20.0, 18.0, 2.0, Color32::from_rgb(0xe8, 0xc5, 0x3a), Stroke::NONE);
         cv.text(x + 22.0, 178.0, Align2::CENTER_TOP, format!("{} = {}", name, val), 10.0, silk);
     }
-    // Onboard lamps, same side as on a Blue Pill: red power LED and the PC13 LED.
-    lamp(&cv, 118.0, 168.0, true, Color32::from_rgb(0xef, 0x44, 0x44), "PWR", "питание");
+    // On a Blue Pill both lamps sit at the SWD end, opposite the USB jack.
+    lamp(&cv, 800.0, 150.0, true, Color32::from_rgb(0xef, 0x44, 0x44), "PWR", "питание");
     let (pc13_on, pc13_state) = pc13_lamp(ui, sh);
-    lamp(&cv, 118.0, 228.0, pc13_on, Color32::from_rgb(0x3d, 0xd6, 0x6a), "LED", pc13_state);
-    cv.hit(ui, "led-pc13", 100.0, 210.0, 36.0, 56.0).on_hover_text(
+    lamp(&cv, 800.0, 228.0, pc13_on, Color32::from_rgb(0x3d, 0xd6, 0x6a), "LED", pc13_state);
+    cv.hit(ui, "led-pc13", 782.0, 210.0, 36.0, 56.0).on_hover_text(
         "Светодиод платы на PC13, активный 0. LedTask мигает раз в секунду; команда 0x70 включает, гасит или возвращает мигание.",
     );
 

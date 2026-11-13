@@ -54,6 +54,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 sh.job(Job::SwdSim);
                 sh.job(Job::Poll(true));
             }
+            if sh.st.sim_running() && ui.button(RichText::new("Остановить симуляцию").color(p.err)).clicked() {
+                sh.job(Job::SimStop);
+            }
             hint(ui, &p, "симулятор отвечает на те же команды, что и прошивка, и пишет такой же лог");
         });
         ui.add_space(8.0);

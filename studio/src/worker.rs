@@ -54,6 +54,8 @@ pub enum Job {
     Flash(Config),
     HilTest(Config),
     SimFram(bool),
+    /// Drop every virtual-board link. Real UART and OpenOCD stay open.
+    SimStop,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +107,15 @@ pub struct State {
     pub job_ok: Option<bool>,
     pub ocd_console: Vec<String>,
     pub sim_fram: bool,
+}
+
+impl State {
+    /// True when UART1, UART3 or SWD is the virtual board.
+    pub fn sim_running(&self) -> bool {
+        self.proto.as_deref() == Some("виртуальная плата")
+            || self.log.as_deref() == Some("виртуальная плата")
+            || self.swd.as_deref() == Some("виртуальная плата")
+    }
 }
 
 #[derive(Default)]
@@ -812,6 +823,29 @@ impl Eng {
                 c.env("PATH", format!("{}{}{}", extra, if cfg!(windows) { ";" } else { ":" }, path));
                 self.toast(Tone::Info, "Порты и ST-Link освобождены для автотеста hil.py");
                 self.spawn_bg("Автотест hil.py", c, true);
+            }
+            Job::SimStop => {
+                let mut stopped = false;
+                if matches!(self.proto, Some(Proto::Sim)) {
+                    self.proto = None;
+                    self.st.proto = None;
+                    self.st.polling = false;
+                    stopped = true;
+                }
+                if matches!(self.log, Some(LogSrc::Sim)) {
+                    self.log = None;
+                    self.st.log = None;
+                    stopped = true;
+                }
+                if matches!(self.swd, Some(Swd::Sim)) {
+                    self.swd = None;
+                    self.st.swd = None;
+                    self.st.regs.clear();
+                    stopped = true;
+                }
+                if stopped {
+                    self.toast(Tone::Info, "Симуляция остановлена");
+                }
             }
             Job::SimFram(on) => {
                 self.sim.fram_present = on;

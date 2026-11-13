@@ -6,6 +6,55 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Open a port at `baud`, 8N1.
+///
+/// On macOS `serialport` sets the speed with the IOSSIOSPEED ioctl. Apple's
+/// driver for Prolific PL2303 adapters does not apply it: termios reports
+/// 38400 while the wire runs at another rate, so the board sees garbage
+/// (uart_err, rx_crc_err) and never answers. pyserial (hil.py) sets standard
+/// speeds through termios and works. Setting the speed again with tcsetattr
+/// makes every adapter run at the rate asked for.
+fn open_port(name: &str, baud: u32, timeout: Duration) -> Result<Box<dyn serialport::SerialPort>, String> {
+    let busy = |e: serialport::Error| format!("{}: {} (порт занят другой программой?)", name, e);
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let port = serialport::new(name, baud).timeout(timeout).open_native().map_err(busy)?;
+        termios_speed(port.as_raw_fd(), baud).map_err(|e| format!("{}: скорость {} не установилась: {}", name, baud, e))?;
+        Ok(Box::new(port))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        serialport::new(name, baud).timeout(timeout).open().map_err(busy)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn termios_speed(fd: std::os::unix::io::RawFd, baud: u32) -> std::io::Result<()> {
+    let speed = match baud {
+        9600 => libc::B9600,
+        19200 => libc::B19200,
+        38400 => libc::B38400,
+        57600 => libc::B57600,
+        115200 => libc::B115200,
+        230400 => libc::B230400,
+        _ => return Ok(()), // non-standard: only IOSSIOSPEED can set it
+    };
+    // SAFETY: fd is the open tty owned by the caller; termios is plain data.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(fd, &mut t) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        libc::cfsetispeed(&mut t, speed);
+        libc::cfsetospeed(&mut t, speed);
+        if libc::tcsetattr(fd, libc::TCSANOW, &t) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct PortInfo {
     pub name: String,
@@ -48,10 +97,7 @@ pub struct ProtoPort {
 
 impl ProtoPort {
     pub fn open(name: &str) -> Result<ProtoPort, String> {
-        let port = serialport::new(name, PROTO_BAUD)
-            .timeout(Duration::from_millis(10))
-            .open()
-            .map_err(|e| format!("{}: {} (порт занят другой программой?)", name, e))?;
+        let port = open_port(name, PROTO_BAUD, Duration::from_millis(10))?;
         Ok(ProtoPort { port })
     }
 
@@ -98,10 +144,7 @@ pub struct LogPort {
 
 impl LogPort {
     pub fn open(name: &str, sink: Arc<Mutex<Vec<String>>>) -> Result<LogPort, String> {
-        let mut port = serialport::new(name, LOG_BAUD)
-            .timeout(Duration::from_millis(50))
-            .open()
-            .map_err(|e| format!("{}: {} (порт занят другой программой?)", name, e))?;
+        let mut port = open_port(name, LOG_BAUD, Duration::from_millis(50))?;
         let stop = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
         let (stop2, err2) = (stop.clone(), error.clone());

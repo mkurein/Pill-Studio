@@ -1871,13 +1871,14 @@ dependencies = [
 
 [[package]]
 name = "pill-studio"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "dirs",
  "eframe",
  "egui_extras",
  "egui_plot",
  "embed-resource",
+ "libc",
  "object",
  "roxmltree",
  "serde",

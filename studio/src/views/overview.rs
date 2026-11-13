@@ -154,7 +154,15 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     }
                 });
                 match sh.st.status {
-                    None => hint(ui, &p, "Нет данных: подключите UART1 и запросите STATUS."),
+                    None => hint(
+                        ui,
+                        &p,
+                        if sh.uart_ok() {
+                            "UART1 открыт, но STATUS ещё не разобран. Нажмите «Запросить сейчас» — ошибка появится здесь и всплывающим сообщением."
+                        } else {
+                            "Нет данных: подключите UART1 и запросите STATUS."
+                        },
+                    ),
                     Some(s) => {
                         egui::Grid::new("ov_status").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
                             kv(ui, &p, "Аптайм", fmt::uptime(s.uptime_ms));
@@ -196,6 +204,12 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                         sh.send(vec![CMD_RESET]);
                     }
                 });
+                if let Some(t) = sh.txns.iter().rev().find(|t| !t.poll) {
+                    let color = if t.ok { p.ok } else { p.err };
+                    ui.label(RichText::new(format!("{} — {}", t.label, t.verdict)).small().color(color));
+                } else if !sh.uart_ok() {
+                    hint(ui, &p, "Сначала подключите UART1 (COM4). Кнопки шлют команды на плату и пишут результат этой строкой.");
+                }
                 if sh.st.proto.as_deref() == Some("виртуальная плата") {
                     let mut fram = sh.st.sim_fram;
                     if ui.checkbox(&mut fram, "виртуальная FRAM установлена").on_hover_text("снимите — и посмотрите, как прошивка сообщает об отказе микросхемы").changed() {

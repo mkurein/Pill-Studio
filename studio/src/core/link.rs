@@ -55,7 +55,8 @@ impl ProtoPort {
         Ok(ProtoPort { port })
     }
 
-    /// Send a frame, collect the reply until the line is idle for 60 ms.
+    /// Send a frame and read until the reply's CRC checks, or the line stays
+    /// quiet for 200 ms. A short idle used to cut a STATUS reply in half.
     pub fn xfer(&mut self, data: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
         let _ = self.port.clear(serialport::ClearBuffer::Input);
         self.port.write_all(data).map_err(|e| e.to_string())?;
@@ -69,12 +70,19 @@ impl ProtoPort {
                 Ok(n) if n > 0 => {
                     out.extend_from_slice(&buf[..n]);
                     last = Some(Instant::now());
+                    // A whole reply has a CRC of 0. Return it now so a later
+                    // gap on the wire cannot be mistaken for "end of frame".
+                    if out.len() >= 4 && super::proto::crc16(&out) == 0 {
+                        return Ok(out);
+                    }
                 }
                 Ok(_) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                 Err(e) => return Err(e.to_string()),
             }
-            if last.is_some_and(|l| l.elapsed() > Duration::from_millis(60)) {
+            // USB-UART often splits a 60-byte STATUS across packets with a
+            // pause longer than 60 ms. Wait out that pause before giving up.
+            if last.is_some_and(|l| l.elapsed() > Duration::from_millis(200)) {
                 break;
             }
         }

@@ -416,6 +416,15 @@ impl Eng {
         if let Some(r) = &reply {
             self.apply_reply(&body, r, raw);
         }
+        if !poll && !ok {
+            self.toast(Tone::Err, format!("{label}: {verdict}"));
+        } else if !poll && body.first().copied() == Some(CMD_STATUS) {
+            if let Some(r) = &reply {
+                if Status::decode(&r.payload).is_none() {
+                    self.toast(Tone::Err, format!("STATUS: в ответе {} байт, нужно 56", r.payload.len()));
+                }
+            }
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.out.txns.push(Txn { id, t, tx, rx, label, verdict, ok, ms, poll });
@@ -767,7 +776,11 @@ impl Eng {
                     self.st.fw = None;
                     let r = self.transact(vec![CMD_PING], false, false);
                     match r {
-                        Some(_) => self.toast(Tone::Ok, format!("UART1 {}: плата ответила", name)),
+                        Some(_) => {
+                            self.toast(Tone::Ok, format!("UART1 {}: плата ответила", name));
+                            self.st.polling = true;
+                            self.transact(vec![CMD_STATUS], false, false);
+                        }
                         None => self.toast(
                             Tone::Warn,
                             format!("UART1 {} открыт, но PING без ответа — проверьте провода TX↔RX и что это USART1", name),
@@ -780,6 +793,8 @@ impl Eng {
                 self.proto = Some(Proto::Sim);
                 self.st.proto = Some("виртуальная плата".into());
                 self.transact(vec![CMD_PING], false, false);
+                self.st.polling = true;
+                self.transact(vec![CMD_STATUS], false, false);
                 self.toast(Tone::Info, "UART1 → виртуальная плата");
             }
             Job::ProtoClose => {

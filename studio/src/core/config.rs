@@ -97,6 +97,23 @@ impl Config {
     }
 }
 
+/// Full path of a tool given by bare name (`openocd`, `arm-none-eabi-objdump`).
+/// An app started from Finder or the Dock gets PATH=/usr/bin:/bin:/usr/sbin:/sbin,
+/// so the Homebrew prefixes are searched after PATH. Unknown → the name unchanged.
+pub fn find_tool(name: &str) -> PathBuf {
+    let given = Path::new(name);
+    if name.is_empty() || given.components().count() > 1 {
+        return given.to_path_buf();
+    }
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+    if !cfg!(windows) {
+        dirs.push("/opt/homebrew/bin".into());
+        dirs.push("/usr/local/bin".into());
+    }
+    let file = if cfg!(windows) && given.extension().is_none() { format!("{name}.exe") } else { name.to_string() };
+    dirs.iter().map(|d| d.join(&file)).find(|p| p.is_file()).unwrap_or_else(|| given.to_path_buf())
+}
+
 /// Cursor's command-line launcher. An app started from the Dock or Explorer does not
 /// inherit the shell PATH, so the install locations are checked first.
 pub fn find_cursor() -> Option<String> {
@@ -258,6 +275,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_tool_keeps_paths_and_resolves_names() {
+        assert_eq!(find_tool("/x/openocd"), PathBuf::from("/x/openocd"));
+        assert_eq!(find_tool("no-such-tool-xyz"), PathBuf::from("no-such-tool-xyz"));
+        if cfg!(unix) {
+            assert!(find_tool("sh").is_absolute());
+        }
+    }
 
     #[test]
     fn board_switch_keeps_each_boards_ports() {

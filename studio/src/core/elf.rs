@@ -26,6 +26,9 @@ pub struct Elf {
     pub path: PathBuf,
     pub syms: Vec<Sym>,
     pub sections: Vec<Section>,
+    /// `Default_Handler` from startup .s (a NOTYPE label, so not in `syms`):
+    /// unused IRQ handlers are weak aliases at this address.
+    pub default_handler: Option<u32>,
 }
 
 impl Elf {
@@ -51,10 +54,12 @@ impl Elf {
             .filter(|s| s.size() > 0 && s.address() != 0)
             .filter_map(|s| Some(Section { name: s.name().ok()?.to_string(), addr: s.address() as u32, size: s.size() as u32 }))
             .collect();
+        let default_handler = file.symbols().find(|s| s.name() == Ok("Default_Handler")).map(|s| s.address() as u32 & !1);
         Ok(Elf {
             path: path.to_path_buf(),
             syms,
             sections,
+            default_handler,
         })
     }
 
@@ -188,7 +193,7 @@ fn tool_bin(tool_dir: &str, which: &str) -> PathBuf {
             }
         }
     }
-    PathBuf::from(name)
+    crate::core::config::find_tool(&name)
 }
 
 /// Default ELF locations relative to the project root.

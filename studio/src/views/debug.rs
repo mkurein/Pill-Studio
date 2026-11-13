@@ -307,8 +307,13 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                         hint(ui, &p, "Список функций берётся из ELF. Сначала соберите прошивку.");
                         return;
                     };
+                    // unused IRQ handlers are weak aliases of Default_Handler: dozens of names, one address
                     let mut n = 0;
-                    for s in e.syms.iter().filter(|s| s.func && (q.is_empty() || s.name.to_ascii_lowercase().contains(&q))) {
+                    for s in e.syms.iter().filter(|s| {
+                        s.func
+                            && Some(s.addr) != e.default_handler
+                            && (q.is_empty() || s.name.to_ascii_lowercase().contains(&q))
+                    }) {
                         if n == 40 {
                             hint(ui, &p, "показаны первые 40 — уточните фильтр");
                             break;
@@ -480,6 +485,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                         ui.label(RichText::new("✗ ошибка").color(p.err));
                     }
                     _ => {}
+                }
+                if sh.st.job_out.is_empty() {
+                    return; // no output yet: no empty box
                 }
                 egui::Frame::new().fill(p.panel2).corner_radius(6).inner_margin(6).show(ui, |ui| {
                     egui::ScrollArea::vertical().id_salt("jobout").max_height(220.0).stick_to_bottom(true).show(ui, |ui| {

@@ -162,7 +162,7 @@ fn last_error(lines: &[String]) -> String {
 
 impl OpenOcd {
     pub fn start(cfg: &OcdConfig) -> Result<OpenOcd, String> {
-        let mut cmd = Command::new(&cfg.exe);
+        let mut cmd = Command::new(super::config::find_tool(&cfg.exe));
         cmd.args(&cfg.args);
         if cfg.under_reset {
             cmd.args(["-c", "reset_config srst_only srst_nogate connect_assert_srst"]);

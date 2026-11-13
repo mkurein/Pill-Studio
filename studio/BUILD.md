@@ -1,8 +1,8 @@
 # Сборка Pill Studio
 
-Pill Studio — отладочная программа для платы STM32F103C8 (Blue Pill).
+Pill Studio — отладочная программа для плат Blue Pill (STM32F103C8) и Black Pill (STM32F411CE).
 Исходники лежат в папке `studio/` этого репозитория, крейт называется `pill-studio`.
-Прошивка собирается отдельно, из корня репозитория: `make -C Debug all -j8`.
+Прошивка собирается отдельно: Blue Pill — из корня этого репозитория (`make` или `make -C Debug all -j8`), Black Pill — в репозитории F411CE.
 
 Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml` (сейчас `0.2.0`). Нужен Rust 1.88 или новее.
 

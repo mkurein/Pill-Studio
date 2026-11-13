@@ -1,5 +1,7 @@
 # Быстрый старт и отладка primGPT (STM32F103C8T6) в Cursor / VS Code
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md). Таблица отличий — также в разделе «Чем отличается этот проект от F411CE?».
+
 Полное руководство: от первого запуска до продвинутой отладки проекта primGPT (STM32F103C8T6 Blue Pill, FreeRTOS) в Cursor / VS Code с расширением Cortex-Debug.
 
 > **Платформа:** основные инструкции даны для **Windows** (Cursor / VS Code + STM32CubeIDE 1.17.0 toolchain). На macOS замените `Ctrl` на `Cmd`, установите toolchain через Homebrew (`brew install arm-none-eabi-gcc open-ocd`).
@@ -70,11 +72,11 @@ cursor --install-extension marus25.cortex-debug
 
 `Debug/makefile` уже есть в репозитории — STM32CubeIDE не нужен для сборки.
 
-> **Важно для Cursor:** открывайте `C:\Project\ProjectSTM32\F103C8T` (`File -> Open Folder`) или `F103C8T.code-workspace`.
+> **Важно для Cursor:** открывайте `C:\Project\ProjectSTM32\Pill-Studio` (`File -> Open Folder`) или `Pill-Studio.code-workspace`.
 >
 > Почему это важно:
 > - Cursor берёт конфигурации запуска и сборки из `.vscode` этой папки
-> - `F5` идёт через `launch.json`; пути в нём считаются от папки с именем `F103C8T`
+> - `F5` идёт через `launch.json`; пути в нём считаются от открытой папки проекта (`${workspaceFolder}`)
 > - задачи в `tasks.json` собирают `Debug/primGPT.elf` и прошивают его через `primGPT Debug.cfg`
 >
 > Если открыть родительский каталог или архив `STM32F1_old`, `F5` соберёт старую копию прошивки. Актуальная — в `F103C8T`.

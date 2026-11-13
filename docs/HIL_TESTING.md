@@ -2,16 +2,17 @@
 
 ## Подключение
 
-| Сигнал | Пин STM32 | Куда |
-|---|---|---|
-| SWDIO / SWCLK / GND / 3.3V | PA13 / PA14 | ST-Link |
-| NRST (желательно) | NRST | ST-Link RST — нужен для `--under-reset` |
-| USART1 TX / RX | PA9 / PA10 | USB-UART RX / TX (38400 8N1) — протокол |
-| USART3 TX | PB10 | второй USB-UART RX (115200) — текстовый лог |
-| FRAM SPI1 | PA5 SCK, PA6 MISO, PA7 MOSI, PA4 CS | микросхема FRAM (32 КБ) |
+| Сигнал | Blue Pill | Black Pill | Куда |
+|---|---|---|---|
+| SWDIO / SWCLK / GND / 3.3V | PA13 / PA14 | PA13 / PA14 (гребёнка SWD с торца) | ST-Link |
+| NRST (желательно) | NRST (R) | NRST (R) | ST-Link RST — нужен для `--under-reset` |
+| USART1 TX / RX | PA9 / PA10 | PA9 / PA10 | USB-UART RX / TX (38400 8N1) — протокол |
+| Лог TX | PB10 (USART3) | PA11 (USART6) | второй USB-UART RX (115200) — текстовый лог |
+| SPI-память | FRAM 32 КБ на PA4–PA7 (внешняя) | W25Q64 на плате, провода не нужны | — |
 
-BOOT0 = 0. Для полного автотеста нужны оба UART; с одним адаптером
-тесты другого канала помечаются SKIP.
+BOOT0 = 0 (на Black Pill — не держать кнопку BOOT0 при сбросе). Для полного
+автотеста нужны оба UART; с одним адаптером тесты другого канала помечаются SKIP
+(на Black Pill 2026-11-13 так и было: 28 PASS, лог SKIP).
 
 ## Две платы
 
@@ -22,6 +23,9 @@ BOOT0 = 0. Для полного автотеста нужны оба UART; с �
 и проверка `swd: chip is …` по DEV_ID (0x410 / 0x431). Лог на F411 — USART6, TX PA11.
 На WeAct Black Pill вместо FRAM распаяна SPI NOR W25Q64: те же FRAM-тесты проходят,
 драйвер пишет через стирание сектора 4 КБ.
+
+Проверить, какая плата на ST-Link, до `test`: `hil.py probe` (печатает DEV_ID и
+имя чипа). Если чип не совпадает с репозиторием, `test` остановится на `swd: chip is …`.
 
 ## Запуск
 
@@ -52,5 +56,5 @@ RESET (`boot_count+1`) → `g_diag` по SWD без записи о сбое.
 | `log [сек]` | UART3 | текстовый лог |
 | `diag` | SWD | `g_diag`: счётчики + сбой (PC → файл:строка) |
 | `regs` | SWD | halt, PC/LR/SP/CFSR/HFSR, resume |
-| `gpio` | SWD | реальные биты PC13/PC15 |
+| `gpio` | SWD | реальные биты PC13/PC15 (CRH на F103, MODER/ODR на F411) |
 | `read <symbol или 0xaddr> [слов]` | SWD | любая переменная из ELF |

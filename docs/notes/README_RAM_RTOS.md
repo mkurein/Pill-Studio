@@ -1,5 +1,7 @@
 # README_RAM_RTOS.md
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md). Числа RAM ниже — для 20 КБ F103; на F411 из 128 КБ занято ~19 %, ограничение памяти там не главное.
+
 Подробное руководство по памяти и RTOS-диагностике для проекта `primGPT` на `STM32F103C8`.
 
 Документ объясняет:

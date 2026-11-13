@@ -1,5 +1,9 @@
 # Architecture
 
+Описано для Blue Pill. Black Pill (F411CE) устроена так же; отличия:
+лог USART6 вместо USART3, SPI NOR W25Q64 вместо FRAM (`fram.c` выбирает по JEDEC),
+CubeMX-файлы `stm32f4xx_*`. Таблица отличий — [HARDWARE.md](HARDWARE.md).
+
 ## Layers
 
 ```text

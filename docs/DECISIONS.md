@@ -90,6 +90,8 @@ Reason: сборка на macOS и в CI без генерации `Debug/makefi
 
 ## ADR-014 — F103 Studio: нативная GUI-студия на Rust egui
 
+С ADR-016 — Pill Studio, для двух плат.
+
 `studio/` — отдельный крейт (eframe 0.33, без WebView): справочник MCU и платы,
 регистры из `STM32F103.svd` с чтением по SWD (OpenOCD TCL RPC), консоль
 протокола USART1, монитор FreeRTOS по STATUS, лог USART3, разбор `g_diag`,
@@ -103,7 +105,7 @@ Rule: меняется протокол / STATUS / `diag_t` → обновить
 
 OpenOCD студии открывает GDB-порт 3333 (`OcdConfig.gdb_port`, 0 = закрыт) рядом
 с TCL 6667. Cursor подключается к нему конфигурацией Cortex-Debug
-`servertype: external` («Attach to F103 Studio»). Студия раз в 300 мс читает
+`servertype: external` («Attach to Pill Studio»). Студия раз в 300 мс читает
 состояние ядра: новый останов или новый PC → регистры, листинг и
 `cursor -g файл:строка`.
 Reason: один ST-Link не делят два OpenOCD; у Cursor нет API для внешней программы.

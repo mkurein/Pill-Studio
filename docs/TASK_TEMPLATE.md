@@ -4,7 +4,7 @@
 
 ```text
 PROJECT:
-primGPT — STM32F103C8 + FreeRTOS, UART1 command protocol (see AGENTS.md)
+primGPT — STM32F103C8 (Blue Pill) / STM32F411CE (Black Pill, repo F411CE) + FreeRTOS, UART1 command protocol (see AGENTS.md)
 
 TASK:
 <T-номер из docs/TODO.md и одна фраза>

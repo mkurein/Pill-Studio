@@ -20,3 +20,7 @@ arm-none-eabi-size Debug/primGPT.elf
   сам гоняй `.venv/bin/python tools/hil.py test`, читай `log` / `diag` / `regs`
   и исправляй прошивку, пока тест не PASS (не останавливаться на «собралось»).
 - GUI-студия: `studio/` (Rust, egui), `cargo run --release` в `studio/`.
+  Pill Studio — для Blue Pill и Black Pill; данные плат в `studio/src/core/boards.rs`
+  и `mcu_f411.rs`, после правки — `cargo test` и `cargo clippy --all-targets -- -D warnings`.
+- Black Pill: прошивка в `../F411CE` (тот же цикл: `make` → `hil.py test`).
+  Перед `hil.py test` проверь `hil.py probe`: какая плата на ST-Link.

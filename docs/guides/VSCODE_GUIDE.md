@@ -1,5 +1,7 @@
 # Работа с проектом primGPT (STM32F103C8T6) в Cursor / VS Code на macOS
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md).
+
 Подробное руководство по редактированию, сборке и отладке STM32F1-проекта в Cursor (или VS Code) на macOS.
 
 ---

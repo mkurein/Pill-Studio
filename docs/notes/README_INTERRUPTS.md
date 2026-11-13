@@ -1,5 +1,7 @@
 # README_INTERRUPTS.md
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md). Приоритеты IRQ те же (USART1 = 5, timebase TIM1_UP_TIM10 = 15), на M4F добавлен FPU-контекст.
+
 Этот документ объясняет систему прерываний в проекте `primGPT`: какие прерывания используются, как они связаны с FreeRTOS, и как безопасно развивать ISR-логику дальше.
 
 ---

@@ -1,7 +1,8 @@
 # FreeRTOS
 
 FreeRTOS v10.0.1, CMSIS-RTOS v2 wrapper, `heap_4`, tick 1 kHz, preemption on.
-Config: `Core/Inc/FreeRTOSConfig.h`.
+Config: `Core/Inc/FreeRTOSConfig.h`. Таблицы ниже — Blue Pill; отличия
+Black Pill (репозиторий F411CE) — в конце, раздел «Black Pill».
 
 ## Tasks
 
@@ -63,3 +64,27 @@ MemManage / BusFault / UsageFault (`DIAG_FAULT_ENTRY` в USER CODE `stm32f1xx_it
 - В задачах `vTaskDelay` / `osDelay`, **не** `HAL_Delay`.
 - Большие буферы — static/global, не на стеке задачи.
 - Новая задача → обновить эту таблицу и диагностику в `StartDefaultTask`.
+- Задачи, очередь, хуки и приоритеты IRQ одинаковы на обеих платах: меняешь здесь —
+  перенеси в F411CE и в `boards.rs` (`tasks`, `heap_total`) студии.
+
+## Black Pill (STM32F411CE)
+
+Та же структура: Uart1Task / defaultTask / LedTask, `uartQueue`, `log_mutex`,
+хуки → `diag_fault()`, `DIAG_FAULT_ENTRY` в USER CODE `stm32f4xx_it.c`.
+
+| | Blue Pill | Black Pill |
+|---|---|---|
+| FreeRTOS, порт | 10.0.1, `GCC/ARM_CM3` | 10.3.1, `GCC/ARM_CM4F` (FPU, lazy stacking) |
+| defaultTask стек | 1024 B | 2048 B |
+| Uart1Task / LedTask | 2048 / 512 B | 2048 / 512 B |
+| `configMINIMAL_STACK_SIZE` (IDLE) | 128 слов | 400 слов |
+| Tmr Svc стек | 256 слов | 800 слов |
+| Heap | 10 КБ heap_4 | 10 КБ heap_4 (RAM 128 КБ — можно больше) |
+| Лог | USART3 TX polling | USART6 TX polling |
+| HAL timebase | TIM1_UP_IRQn, 15 | TIM1_UP_TIM10_IRQn, 15 |
+| USART1_IRQn | 5 | 5 |
+| RAM static | 83 % из 20 КБ | 19 % из 128 КБ |
+
+`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY = 5`, 4 бита приоритета — как на F103.
+Задачи, использующие float, на F411 сохраняют регистры FPU в стеке (+~136 B на
+кадр исключения): считать запас стека с этим.

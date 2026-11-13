@@ -1,5 +1,7 @@
 # Алгоритм загрузки и работы primGPT
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md). Загрузка F411 подробно — `BOOT_ALGORITHM_F411CE.md` в репозитории F411CE.
+
 Полное описание того, что происходит от подачи питания до работающей системы с тремя задачами FreeRTOS.
 
 ---

@@ -66,7 +66,7 @@ heap_free, heap_min` (u32) · `stack_free default/led/uart` (u16, байты) ·
 | `02 00 00 D0` | FRAM test | `01 00 4B 55 52 45 49 4E 00 ..` |
 | `70 01 E5 B1` | bad CRC | `01 E1 ..` |
 
-## UART3 log (115200, TX only)
+## Log UART (115200, TX only): USART3 PB10 на Blue Pill, USART6 PA11 на Black Pill
 
 `BOOT fw=<ver> rst=0x<CSR> boot=<n>` → `[PREV_FAULT ...]` →
 `FRAM probe=OK|FAIL sr=<WEL set>/<WEL clear> mem=FRAM|W25Q64|NOR jedec=<id>` →

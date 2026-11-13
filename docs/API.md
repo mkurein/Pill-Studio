@@ -7,7 +7,7 @@
 | Function | Notes |
 |----------|-------|
 | `void log_init(void)` | создать `log_mutex` (до старта шедулера) |
-| `void log_printf(const char *fmt, ...)` | UART3, buf 128 B, mutex если шедулер запущен и не ISR |
+| `void log_printf(const char *fmt, ...)` | UART3 (на F411 — USART6), buf 128 B, mutex если шедулер запущен и не ISR |
 | `printf_uart3` | макрос = `log_printf` |
 | `int _write(int, char *, int)` | newlib hook: `printf` → **UART3** |
 | `void uart1_start_rx(void)` | взвести RX IRQ (после `xQueueCreate`) |

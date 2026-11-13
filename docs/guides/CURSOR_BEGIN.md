@@ -1,5 +1,7 @@
 # Быстрый старт: primGPT в Cursor на Windows
 
+> **Две платы.** Документ написан для Blue Pill (STM32F103C8T6, этот репозиторий). Для Black Pill (STM32F411CEU6, репозиторий [F411CE](https://github.com/mkurein/F411CE)) всё то же, кроме: лог USART6 на PA11 вместо USART3 на PB10, SPI NOR W25Q64 на плате вместо FRAM, OpenOCD `target/stm32f4x.cfg`, `STM32F411.svd`, `build/primGPT_F411.elf`, 96 МГц, Flash 512 КБ, RAM 128 КБ, FreeRTOS 10.3.1 (порт ARM_CM4F). Сводка отличий — [HARDWARE.md](../HARDWARE.md), выводы — [PINOUT.md](../PINOUT.md). Папку F411CE открывают в Cursor так же; одновременно с Pill Studio — «Attach to Pill Studio».
+
 ---
 
 ## Шаг 1 — Установить расширения
@@ -19,10 +21,10 @@
 `File → Open Folder` → выбрать папку:
 
 ```
-C:\Project\ProjectSTM32\F103C8T
+C:\Project\ProjectSTM32\Pill-Studio
 ```
 
-Либо открыть `F103C8T.code-workspace`. Сборка, IntelliSense и F5 привязаны к папке с именем `F103C8T`, поэтому рядом могут лежать `AI` и архив `STM32F1_old`.
+Либо открыть `Pill-Studio.code-workspace`. Сборка, IntelliSense и F5 берутся из `.vscode` этой папки (имя папки не важно: `Pill-Studio` или старое `F103C8T`), поэтому рядом могут лежать `AI` и архив `STM32F1_old`.
 
 > Раньше этот же репозиторий открывали как `STM32F1\primGPT`. Прошивка и отладка теперь здесь. `STM32F1_old\primGPT` — снимок на 22 сентября 2026, без правок T1–T7 и без Pill Studio.
 
@@ -161,7 +163,7 @@ C:\Project\ProjectSTM32\F103C8T
 
 ### Чеклист перед прошивкой
 
-1. Открыта папка `F103C8T` (в workspace она так и называется).
+1. Открыта папка проекта (`Pill-Studio`, раньше `F103C8T`).
 2. `Build` проходит без ошибок.
 3. ST-Link подключен и виден в системе.
 4. Запущена задача `Flash` или `Build & Flash`.

@@ -23,6 +23,22 @@ pub struct OcdConfig {
     /// Extra arguments before `init` (interface/target).
     pub args: Vec<String>,
     pub under_reset: bool,
+    /// GDB server port for Cursor / VS Code (Cortex-Debug `servertype: external`).
+    /// 0 = closed. One OpenOCD then serves both the studio (TCL) and the editor (GDB).
+    #[serde(default = "default_gdb_port")]
+    pub gdb_port: u16,
+}
+
+pub const GDB_PORT: u16 = 3333;
+
+fn default_gdb_port() -> u16 {
+    GDB_PORT
+}
+
+/// `-c` arguments that open the TCL port for the studio and, unless 0, the GDB port.
+pub fn port_args(gdb_port: u16) -> Vec<String> {
+    let gdb = if gdb_port == 0 { "gdb_port disabled".to_string() } else { format!("gdb_port {gdb_port}") };
+    vec!["-c".into(), format!("tcl_port {}", TCL_PORT), "-c".into(), "telnet_port disabled".into(), "-c".into(), gdb]
 }
 
 /// Upstream OpenOCD. CubeIDE's build does not ship these names next to the exe
@@ -51,7 +67,7 @@ impl Default for OcdConfig {
                 "target/stm32f1x.cfg".into(),
             ];
         }
-        OcdConfig { exe: "openocd".into(), args, under_reset: false }
+        OcdConfig { exe: "openocd".into(), args, under_reset: false, gdb_port: GDB_PORT }
     }
 }
 
@@ -139,7 +155,7 @@ impl OpenOcd {
         if cfg.under_reset {
             cmd.args(["-c", "reset_config srst_only srst_nogate connect_assert_srst"]);
         }
-        cmd.args(["-c", &format!("tcl_port {}", TCL_PORT), "-c", "telnet_port disabled", "-c", "gdb_port disabled"]);
+        cmd.args(port_args(cfg.gdb_port));
         cmd.args(["-c", "init"]);
         cmd.stdout(Stdio::null()).stderr(Stdio::piped()).stdin(Stdio::null());
         #[cfg(windows)]
@@ -342,11 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn gdb_port_open_by_default_and_closable() {
+        let a = port_args(GDB_PORT).join(" ");
+        assert!(a.contains("gdb_port 3333") && a.contains("tcl_port 6667"));
+        assert!(port_args(0).join(" ").contains("gdb_port disabled"));
+        let old: OcdConfig = serde_json::from_str(r#"{"exe":"openocd","args":[],"under_reset":false}"#).unwrap();
+        assert_eq!(old.gdb_port, GDB_PORT);
+    }
+
+    #[test]
     fn legacy_hla_args_follow_cubeide_when_present() {
         let legacy = OcdConfig {
             exe: "openocd".into(),
             args: LEGACY_ARGS.iter().map(|s| (*s).to_string()).collect(),
             under_reset: false,
+            gdb_port: GDB_PORT,
         };
         let fixed = legacy.for_this_machine();
         if cube_scripts().is_some() {

@@ -6,6 +6,9 @@
 ## Current
 
 - [ ] **T10** Прогнать `tools/hil.py test` на плате (SWD + оба UART), исправить найденное.
+  2026-11-13: на ST-Link (V2J45S7, 3.25 В) отвечает **STM32F411CEU6**, не F103:
+  Cortex-M4, DEV_ID 0x431, Flash 512 КБ, CPUTAPID 0x2ba01477 (stm32f1x.cfg его
+  отвергает). Для T10 нужна плата Blue Pill со STM32F103C8.
 
 ## Done in branch hil-studio (2026-11)
 

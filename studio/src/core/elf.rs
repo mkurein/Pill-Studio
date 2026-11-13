@@ -191,6 +191,11 @@ fn tool_bin(tool_dir: &str, which: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Default ELF locations relative to the project root.
+pub fn candidates(project: &Path) -> Vec<PathBuf> {
+    vec![project.join("build/primGPT.elf"), project.join("Debug/primGPT.elf")]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,9 +208,4 @@ mod tests {
         );
         assert_eq!(split_loc("??:0"), None);
     }
-}
-
-/// Default ELF locations relative to the project root.
-pub fn candidates(project: &Path) -> Vec<PathBuf> {
-    vec![project.join("build/primGPT.elf"), project.join("Debug/primGPT.elf")]
 }

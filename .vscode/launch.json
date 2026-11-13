@@ -2,6 +2,25 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Attach to F103 Studio (OpenOCD :3333)",
+      "cwd": "${workspaceFolder:F103C8T}",
+      "executable": "${workspaceFolder:F103C8T}/build/primGPT.elf",
+      "request": "attach",
+      "type": "cortex-debug",
+      "servertype": "external",
+      "gdbTarget": "localhost:3333",
+      "gdbPath": "arm-none-eabi-gdb",
+      "osx": {
+        "gdbPath": "/opt/homebrew/bin/arm-none-eabi-gdb"
+      },
+      "windows": {
+        "gdbPath": "C:/ST/STM32CubeIDE_1.17.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344/tools/bin/arm-none-eabi-gdb.exe"
+      },
+      "showDevDebugOutput": "parsed",
+      "device": "STM32F103C8",
+      "svdFile": "${workspaceFolder:F103C8T}/STM32F103.svd"
+    },
+    {
       "name": "Debug (OpenOCD)",
       "cwd": "${workspaceFolder:F103C8T}",
       "executable": "${workspaceFolder:F103C8T}/Debug/primGPT.elf",

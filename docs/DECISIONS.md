@@ -98,3 +98,14 @@ Reason: сборка на macOS и в CI без генерации `Debug/makefi
 Reason: отладка и обучение без PDF и IDE на macOS и Windows; тот же HIL-цикл, что у агента.
 Rule: меняется протокол / STATUS / `diag_t` → обновить `proto.rs`, `sim.rs`,
 `core/mod.rs` в том же commit.
+
+## ADR-015 — Студия и Cursor на одном OpenOCD
+
+OpenOCD студии открывает GDB-порт 3333 (`OcdConfig.gdb_port`, 0 = закрыт) рядом
+с TCL 6667. Cursor подключается к нему конфигурацией Cortex-Debug
+`servertype: external` («Attach to F103 Studio»). Студия раз в 300 мс читает
+состояние ядра: новый останов или новый PC → регистры, листинг и
+`cursor -g файл:строка`.
+Reason: один ST-Link не делят два OpenOCD; у Cursor нет API для внешней программы.
+Ограничение: шаг/пуск из студии GDB не замечает, пока сам не остановит ядро.
+Дальше: DAP-сервер в студии (`debugServer` в launch.json) — общий сеанс отладки.

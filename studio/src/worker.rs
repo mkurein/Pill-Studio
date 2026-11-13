@@ -51,6 +51,8 @@ pub enum Job {
     /// Hardware breakpoint at a Thumb address (bit 0 already cleared).
     SwdBpSet(u32),
     SwdBpClr(u32),
+    /// Editor CLI for "open the stop line" (`None` = off).
+    Editor(Option<String>),
     ReadDiag,
     ReadWords(Vec<u32>),
     WriteWord(u32, u32),
@@ -190,6 +192,14 @@ struct Eng {
     project: PathBuf,
     toolchain: String,
     out: Inbox,
+    /// Cursor / VS Code CLI; on every stop it gets `-g file:line`.
+    editor: Option<String>,
+    /// Last line sent to the editor, so a repeated stop does not steal focus again.
+    last_jump: Option<(String, u32)>,
+    /// PC of the last stop the studio has shown. A new PC while halted = someone
+    /// else (Cursor over GDB) stepped the core.
+    last_halt_pc: Option<u32>,
+    last_state_poll: Instant,
 }
 
 impl Worker {
@@ -201,6 +211,7 @@ impl Worker {
         let project = PathBuf::from(&cfg.project_dir);
         let toolchain = cfg.toolchain_dir.clone();
         let poll_ms = cfg.poll_ms.max(200);
+        let editor = cfg.editor();
         std::thread::Builder::new()
             .name("io-worker".into())
             .spawn(move || {
@@ -218,6 +229,10 @@ impl Worker {
                     project: project.clone(),
                     toolchain,
                     out: Inbox::default(),
+                    editor,
+                    last_jump: None,
+                    last_halt_pc: None,
+                    last_state_poll: Instant::now(),
                 };
                 for p in elf::candidates(&project) {
                     if p.exists() {
@@ -344,6 +359,7 @@ impl Eng {
             self.st.swd = None;
             self.toast(Tone::Err, "OpenOCD завершился — SWD отключён");
         }
+        self.watch_stops();
         // background process
         if let Some(bg) = &self.bg {
             self.st.job_out = lock(&bg.out).clone();
@@ -358,6 +374,67 @@ impl Eng {
                 if reload && ok {
                     self.reload_elf();
                 }
+            }
+        }
+    }
+
+    /// The core can also be stopped from Cursor (GDB on the same OpenOCD) or by a
+    /// breakpoint. Every 300 ms: a new stop or a new PC while halted → read registers,
+    /// refresh the studio and open the line in the editor.
+    fn watch_stops(&mut self) {
+        if !matches!(self.swd, Some(Swd::Real(_))) || self.last_state_poll.elapsed() < Duration::from_millis(300) {
+            return;
+        }
+        self.last_state_poll = Instant::now();
+        self.swd_refresh_state();
+        if self.st.swd_state != "halted" {
+            self.last_halt_pc = None;
+            self.last_jump = None;
+            return;
+        }
+        let Ok(pc) = self.read_pc() else { return };
+        if self.last_halt_pc != Some(pc) {
+            self.last_halt_pc = Some(pc);
+            self.run(Job::SwdRegs);
+        }
+    }
+
+    /// `cursor -g file:line` for the current PC. Quiet when following is off,
+    /// there is no ELF / DWARF line, or the file is not on this machine.
+    fn follow_editor(&mut self) {
+        let pc = self.reg("pc") & !1;
+        self.last_halt_pc = Some(pc);
+        let Some(exe) = self.editor.clone() else { return };
+        let Some(elf) = self.st.elf.clone() else { return };
+        let Some(p) = elf::place(&elf, &self.toolchain, pc) else { return };
+        let mut file = PathBuf::from(&p.file);
+        if file.is_relative() {
+            file = self.project.join(file);
+        }
+        if !file.is_file() {
+            return;
+        }
+        let key = (file.to_string_lossy().into_owned(), p.line);
+        if self.last_jump.as_ref() == Some(&key) {
+            return;
+        }
+        let mut c = Command::new(&exe);
+        c.arg("-g").arg(format!("{}:{}", key.0, key.1));
+        c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        match c.spawn() {
+            Ok(mut child) => {
+                // the launcher exits at once; wait so it does not stay a zombie
+                std::thread::spawn(move || child.wait());
+                self.last_jump = Some(key);
+            }
+            Err(e) => {
+                self.editor = None;
+                self.toast(Tone::Warn, format!("Не удалось открыть строку в редакторе ({exe}): {e}. Путь — в Настройках."));
             }
         }
     }
@@ -964,6 +1041,13 @@ impl Eng {
                 }
                 self.swd_refresh_state();
                 self.swd_listing();
+                if self.st.swd_state == "halted" && matches!(self.swd, Some(Swd::Real(_))) {
+                    self.follow_editor();
+                }
+            }
+            Job::Editor(e) => {
+                self.editor = e;
+                self.last_jump = None;
             }
             Job::SwdBpSet(addr) => self.swd_bp(addr, true),
             Job::SwdBpClr(addr) => self.swd_bp(addr, false),

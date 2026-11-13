@@ -64,6 +64,38 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             }
         });
         ui.add_space(8.0);
+        card(ui, &p, "Отладка вместе с Cursor", |ui| {
+            egui::Grid::new("set_cursor").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label("GDB-порт OpenOCD");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut d.ocd.gdb_port).range(0..=65535));
+                    ui.label(RichText::new("0 — закрыт").color(p.muted));
+                });
+                ui.end_row();
+                ui.label("");
+                ui.checkbox(&mut d.editor_follow, "при останове открывать строку исходника в редакторе");
+                ui.end_row();
+                ui.label("Редактор");
+                ui.add(egui::TextEdit::singleline(&mut d.editor_cmd).hint_text("пусто = Cursor; можно code или полный путь").desired_width(520.0));
+                ui.end_row();
+            });
+            let found = if d.editor_cmd.trim().is_empty() { crate::core::config::find_cursor() } else { Some(d.editor_cmd.trim().to_string()) };
+            match found {
+                Some(f) => hint(ui, &p, &format!("Команда: {f} -g файл:строка")),
+                None => hint(ui, &p, "Cursor не найден: укажите путь к его команде cursor (в Cursor: Shell Command → Install 'cursor' command)."),
+            }
+            hint(
+                ui,
+                &p,
+                "Один OpenOCD на двоих: студия говорит с ним по TCL (6667), Cursor — по GDB (этот порт). \
+                 Сначала подключите SWD в студии, потом в Cursor — конфигурация «Attach to F103 Studio (OpenOCD :3333)». \
+                 Если в Cursor ядро запущено (Continue), «Пауза» в студии сразу останавливает и Cursor. \
+                 Шаги и остановы в Cursor студия замечает за 0.3 с. Шаги и «Пуск» из студии Cursor не знает — \
+                 он только переходит на строку; нажмите в Cursor паузу или шаг, чтобы обновить его стек. \
+                 Новый порт действует после переподключения SWD.",
+            );
+        });
+        ui.add_space(8.0);
         card(ui, &p, "Порты и опрос", |ui| {
             egui::Grid::new("set_ports").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 ui.label("UART1 по умолчанию");

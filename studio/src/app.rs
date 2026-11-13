@@ -206,6 +206,9 @@ impl App {
                 if c.poll_ms != self.sh.cfg.poll_ms {
                     self.worker.send(Job::PollMs(c.poll_ms));
                 }
+                if c.editor() != self.sh.cfg.editor() {
+                    self.worker.send(Job::Editor(c.editor()));
+                }
                 self.sh.cfg = *c;
                 self.sh.cfg.save();
             }

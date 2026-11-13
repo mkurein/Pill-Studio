@@ -17,6 +17,10 @@ pub struct Config {
     pub log_port: String,
     pub poll_ms: u64,
     pub dark: bool,
+    /// On every stop of the core, open its source line in the editor (`cursor -g file:line`).
+    pub editor_follow: bool,
+    /// Editor CLI: "cursor", "code" or a full path. Empty = find Cursor.
+    pub editor_cmd: String,
 }
 
 impl Default for Config {
@@ -30,8 +34,47 @@ impl Default for Config {
             log_port: String::new(),
             poll_ms: 1000,
             dark: true,
+            editor_follow: true,
+            editor_cmd: String::new(),
         }
     }
+}
+
+impl Config {
+    /// Editor CLI to call on a stop, or `None` when following is off or no editor is found.
+    pub fn editor(&self) -> Option<String> {
+        if !self.editor_follow {
+            return None;
+        }
+        let c = self.editor_cmd.trim();
+        if !c.is_empty() {
+            return Some(c.to_string());
+        }
+        find_cursor()
+    }
+}
+
+/// Cursor's command-line launcher. An app started from the Dock or Explorer does not
+/// inherit the shell PATH, so the install locations are checked first.
+pub fn find_cursor() -> Option<String> {
+    let mut cands: Vec<PathBuf> = vec![];
+    if cfg!(target_os = "macos") {
+        cands.push("/Applications/Cursor.app/Contents/Resources/app/bin/cursor".into());
+        if let Some(h) = dirs::home_dir() {
+            cands.push(h.join("Applications/Cursor.app/Contents/Resources/app/bin/cursor"));
+        }
+        cands.push("/usr/local/bin/cursor".into());
+        cands.push("/opt/homebrew/bin/cursor".into());
+    } else if cfg!(windows) {
+        if let Some(d) = dirs::data_local_dir() {
+            cands.push(d.join(r"Programs\cursor\resources\app\bin\cursor.cmd"));
+        }
+    } else {
+        cands.push("/usr/bin/cursor".into());
+        cands.push("/usr/local/bin/cursor".into());
+        cands.push("/opt/cursor/resources/app/bin/cursor".into());
+    }
+    cands.into_iter().find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
 }
 
 /// The studio lives in `<project>/studio`: use the parent when it looks like the firmware.

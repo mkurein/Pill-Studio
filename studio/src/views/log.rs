@@ -25,7 +25,19 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
     let b = crate::core::boards::cur();
     h1(ui, &p, &format!("Лог {} ({}, 115200)", b.log_uart.replace("USART", "UART"), b.log_tx), "BOOT — старт, Tick — раз в секунду, DIAG — каждые 5 с, TEST — результат команды, FAULT — авария.");
-    if sh.st.log.is_none() {
+    if let Some(port) = &sh.st.log {
+        ui.horizontal(|ui| {
+            if ui.button("← Обзор").on_hover_text("вернуться на Обзор; лог продолжает читаться").clicked() {
+                sh.act(Act::Go(crate::app::View::Overview));
+            }
+            if ui.button("✕ Закрыть лог").on_hover_text("освободить порт лога и вернуться на Обзор").clicked() {
+                sh.job(Job::LogClose);
+                sh.act(Act::Go(crate::app::View::Overview));
+            }
+            ui.label(RichText::new(format!("читается {port}")).small().color(p.muted));
+        });
+        ui.add_space(6.0);
+    } else {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Лог не подключён.").color(p.warn));
             if ui.button("Подключить на Обзоре").clicked() {

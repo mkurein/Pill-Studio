@@ -1,8 +1,8 @@
 ﻿; F103 Studio — установщик Inno Setup 6. Собирает build_windows.ps1.
-; UTF-8 с BOM. Версия: ISCC /DAppVersion=0.1.0 /Orelease\v0.1.0 /Fимя
+; UTF-8 с BOM. Версия: ISCC /DAppVersion=0.1.1 /Orelease\v0.1.1 /Fимя
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 
 #define AppName "F103 Studio"

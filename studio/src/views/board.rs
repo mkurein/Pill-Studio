@@ -178,32 +178,13 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         cv.rect(x + 2.0, 152.0, 20.0, 18.0, 2.0, Color32::from_rgb(0xe8, 0xc5, 0x3a), Stroke::NONE);
         cv.text(x + 22.0, 178.0, Align2::CENTER_TOP, format!("{} = {}", name, val), 10.0, silk);
     }
-    // LEDs
-    let led = sh.st.status.map(|s| s.led_odr == 0).or_else(|| live(sh, "PC13").map(|l| l.3 == 0));
-    let led_c = match led {
-        Some(true) => Color32::from_rgb(0x4a, 0xde, 0x80),
-        Some(false) => Color32::from_rgb(0x2a, 0x3a, 0x30),
-        None => Color32::from_rgb(0x40, 0x48, 0x50),
-    };
-    if led == Some(true) {
-        cv.circle(820.0, 200.0, 18.0, Color32::from_rgba_unmultiplied(0x4a, 0xde, 0x80, 50), Stroke::NONE);
-    }
-    cv.rect(810.0, 192.0, 20.0, 16.0, 2.0, led_c, Stroke::new(1.0, Color32::BLACK));
-    cv.text(820.0, 214.0, Align2::CENTER_TOP, "PC13", 10.0, silk);
-    cv.text(
-        820.0,
-        228.0,
-        Align2::CENTER_TOP,
-        match led {
-            Some(true) => "горит",
-            Some(false) => "погашен",
-            None => "?",
-        },
-        10.0,
-        silk,
+    // Onboard lamps, same side as on a Blue Pill: red power LED and the PC13 LED.
+    lamp(&cv, 118.0, 168.0, true, Color32::from_rgb(0xef, 0x44, 0x44), "PWR", "питание");
+    let (pc13_on, pc13_state) = pc13_lamp(ui, sh);
+    lamp(&cv, 118.0, 228.0, pc13_on, Color32::from_rgb(0x3d, 0xd6, 0x6a), "LED", pc13_state);
+    cv.hit(ui, "led-pc13", 100.0, 210.0, 36.0, 56.0).on_hover_text(
+        "Светодиод платы на PC13, активный 0. LedTask мигает раз в секунду; команда 0x70 включает, гасит или возвращает мигание.",
     );
-    cv.rect(760.0, 192.0, 20.0, 16.0, 2.0, Color32::from_rgb(0xef, 0x44, 0x44), Stroke::new(1.0, Color32::BLACK));
-    cv.text(770.0, 214.0, Align2::CENTER_TOP, "PWR", 10.0, silk);
 
     // headers
     let step = 36.0;
@@ -261,6 +242,37 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     if let Some(c) = clicked {
         st.selected = mcu::silk_to_pin(&c).map(String::from);
     }
+}
+
+/// PC13 is active-low. In auto mode LedTask toggles it every second; the
+/// picture blinks on that rhythm so the lamp is visible between STATUS polls.
+fn pc13_lamp(ui: &egui::Ui, sh: &Shared) -> (bool, &'static str) {
+    if sh.swd_ok() {
+        if let Some((_, _, _, odr)) = live(sh, "PC13") {
+            let on = odr == 0;
+            return (on, if on { "горит" } else { "погашен" });
+        }
+    }
+    if let Some(s) = sh.st.status.filter(|s| s.led_manual == 1) {
+        let on = s.led_odr == 0;
+        return (on, if on { "горит" } else { "погашен" });
+    }
+    let on = (ui.input(|i| i.time) as i64).rem_euclid(2) == 0;
+    (on, "мигает")
+}
+
+fn lamp(cv: &Canvas, x: f32, y: f32, on: bool, color: Color32, name: &str, state: &str) {
+    let silk = Color32::from_rgb(0xee, 0xf2, 0xff);
+    let lead = Color32::from_rgb(0xc8, 0xcc, 0xd4);
+    if on {
+        cv.circle(x, y, 18.0, Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 90), Stroke::NONE);
+    }
+    let body = if on { color } else { mix(color, 22.0, Color32::BLACK) };
+    cv.circle(x, y, 10.0, body, Stroke::new(1.5, Color32::from_rgb(0x11, 0x11, 0x11)));
+    cv.line(&[(x - 5.0, y + 10.0), (x - 7.0, y + 18.0)], lead, 1.6);
+    cv.line(&[(x + 5.0, y + 10.0), (x + 7.0, y + 18.0)], lead, 1.6);
+    cv.text(x, y + 22.0, Align2::CENTER_TOP, name, 11.0, silk);
+    cv.text(x, y + 36.0, Align2::CENTER_TOP, state, 10.0, silk);
 }
 
 fn pin_summary(ui: &mut egui::Ui, p: &Pal, silk: &str) {

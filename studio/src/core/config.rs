@@ -25,7 +25,7 @@ impl Default for Config {
             project_dir: default_project_dir(),
             ocd: OcdConfig::default(),
             toolchain_dir: String::new(),
-            build_cmd: if cfg!(windows) { "make -C Debug all -j8".into() } else { "make -j8".into() },
+            build_cmd: "make -j8".into(),
             proto_port: String::new(),
             log_port: String::new(),
             poll_ms: 1000,
@@ -52,6 +52,49 @@ fn default_project_dir() -> String {
     String::new()
 }
 
+/// CubeIDE's `Debug/` makefile is not in the repo. The root Makefile writes `build/primGPT.elf`.
+pub fn build_cmd_for(project: &std::path::Path, saved: &str) -> String {
+    let legacy = saved == "make -C Debug all -j8";
+    let debug_mk = project.join("Debug").join("makefile").is_file() || project.join("Debug").join("Makefile").is_file();
+    if legacy && project.join("Makefile").is_file() && !debug_mk {
+        "make -j8".into()
+    } else {
+        saved.to_string()
+    }
+}
+
+/// `make` and `arm-none-eabi-gcc` shipped with STM32CubeIDE, for a GUI that has neither on PATH.
+pub fn cube_toolchain_path() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut make_bin = None;
+    let mut gcc_bin = None;
+    let Ok(st) = std::fs::read_dir(r"C:\ST") else { return None };
+    for ide in st.flatten() {
+        let plugins = ide.path().join("STM32CubeIDE").join("plugins");
+        let Ok(rd) = std::fs::read_dir(&plugins) else { continue };
+        for ent in rd.flatten() {
+            let name = ent.file_name();
+            let name = name.to_string_lossy();
+            let bin = ent.path().join("tools").join("bin");
+            if name.starts_with("com.st.stm32cube.ide.mcu.externaltools.make.win32") && bin.join("make.exe").is_file() {
+                make_bin = Some(bin);
+            } else if name.starts_with("com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32")
+                && bin.join("arm-none-eabi-gcc.exe").is_file()
+            {
+                gcc_bin = Some(bin);
+            }
+        }
+    }
+    match (make_bin, gcc_bin) {
+        (Some(m), Some(g)) => Some(format!("{};{}", m.display(), g.display())),
+        (Some(m), None) => Some(m.display().to_string()),
+        (None, Some(g)) => Some(g.display().to_string()),
+        (None, None) => None,
+    }
+}
+
 fn path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("f103-studio").join("config.json"))
 }
@@ -62,9 +105,11 @@ impl Config {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
+        c.ocd = c.ocd.for_this_machine();
         if c.project_dir.is_empty() || !std::path::Path::new(&c.project_dir).join("Core").exists() {
             c.project_dir = default_project_dir();
         }
+        c.build_cmd = build_cmd_for(std::path::Path::new(&c.project_dir), &c.build_cmd);
         c
     }
     pub fn save(&self) {
@@ -80,5 +125,20 @@ impl Config {
         } else {
             root.join(".venv/bin/python")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_debug_dir_uses_root_makefile() {
+        let root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
+        let cmd = build_cmd_for(&root, "make -C Debug all -j8");
+        if root.join("Makefile").is_file() && !root.join("Debug/makefile").is_file() {
+            assert_eq!(cmd, "make -j8");
+        }
+        assert_eq!(build_cmd_for(&root, "make -j4"), "make -j4");
     }
 }

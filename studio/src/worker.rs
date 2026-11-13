@@ -3,6 +3,7 @@
 //! inbox that the UI drains once per frame (pattern from DigiPot Studio).
 
 use crate::core::config::Config;
+use crate::core::debug::{self, AsmLine, StepKind};
 use crate::core::elf::{self, Elf};
 use crate::core::link::{LogPort, ProtoPort};
 use crate::core::openocd::{OcdConfig, OpenOcd};
@@ -44,7 +45,12 @@ pub enum Job {
     SwdClose,
     /// halt / resume / "reset run" / step …
     SwdCtl(&'static str),
+    /// Into a call, over a call, or out to the caller. Only while halted.
+    SwdStep(StepKind),
     SwdRegs,
+    /// Hardware breakpoint at a Thumb address (bit 0 already cleared).
+    SwdBpSet(u32),
+    SwdBpClr(u32),
     ReadDiag,
     ReadWords(Vec<u32>),
     WriteWord(u32, u32),
@@ -98,6 +104,11 @@ pub struct State {
     pub swd_voltage: Option<String>,
     pub idcode: Option<u32>,
     pub regs: Vec<(String, u32)>,
+    /// Instructions around PC, filled only while the core is halted.
+    pub disasm: Vec<AsmLine>,
+    /// PC and callers (exception frame or LR).
+    pub frames: Vec<u32>,
+    pub breaks: Vec<u32>,
     pub diag: Option<Diag>,
     pub mem: HashMap<u32, u32>,
     pub mem_t: f64,
@@ -456,6 +467,219 @@ impl Eng {
         };
     }
 
+    fn reg(&self, name: &str) -> u32 {
+        self.st.regs.iter().find(|r| r.0 == name).map(|r| r.1).unwrap_or(0)
+    }
+
+    /// Disassembly and call stack. Only while halted: reading them on a running
+    /// core would stop the firmware.
+    fn swd_listing(&mut self) {
+        if self.st.swd_state != "halted" {
+            return;
+        }
+        let pc = self.reg("pc");
+        let lr = self.reg("lr");
+        let sp = self.reg("sp") & !3;
+        if let Err(e) = self.fill_disasm(pc) {
+            self.st.disasm.clear();
+            self.toast(Tone::Warn, e);
+        }
+        let stack = match self.swd.as_mut() {
+            Some(Swd::Real(o)) => o.read_words(sp, 8).unwrap_or_default(),
+            _ => return,
+        };
+        self.st.frames = debug::cortex_frames(pc, lr, &stack);
+    }
+
+    fn ocd_eval(&mut self, c: &str) -> Result<(), String> {
+        match self.swd.as_mut() {
+            Some(Swd::Real(o)) => o.eval(c).map(|_| ()),
+            _ => Err("SWD не подключён".into()),
+        }
+    }
+
+    /// Temporary breakpoint, run, wait, remove it. The core is halted again afterwards.
+    fn run_to(&mut self, addr: u32) -> Result<(), String> {
+        let addr = addr & !1;
+        self.ocd_eval(&format!("bp 0x{addr:08x} 2 hw"))?;
+        let resume = self.ocd_eval("resume");
+        let wait = self.ocd_eval("wait_halt 1500");
+        let _ = self.ocd_eval(&format!("rbp 0x{addr:08x}"));
+        if resume.is_err() || wait.is_err() {
+            let _ = self.ocd_eval("halt");
+        }
+        resume.map_err(|e| format!("не удалось дойти до 0x{addr:08X}: {e}"))?;
+        wait.map_err(|_| format!("вызов не вернулся за 1,5 с (0x{addr:08X}). Ядро остановлено."))
+    }
+
+    /// One instruction. A step into WFI must not block the worker for half a minute.
+    fn step_insn(&mut self) -> Result<(), String> {
+        if let Some(Swd::Real(o)) = self.swd.as_mut() {
+            o.set_read_timeout(Duration::from_millis(1200));
+        }
+        let r = self.ocd_eval("step");
+        if let Some(Swd::Real(o)) = self.swd.as_mut() {
+            o.set_read_timeout(Duration::from_secs(30));
+        }
+        match r {
+            Err(e) if cmd_timed_out(&e) => {
+                let _ = self.ocd_eval("halt");
+                Err("шаг завис: ядро ждёт событие (WFI). Оно остановлено. Поставьте точку и нажмите Продолжить.".into())
+            }
+            other => other,
+        }
+    }
+
+    fn read_pc(&mut self) -> Result<u32, String> {
+        let s = match self.swd.as_mut() {
+            Some(Swd::Real(o)) => o.eval("reg pc")?,
+            _ => return Err("SWD не подключён".into()),
+        };
+        let hex = s.rsplit("0x").next().unwrap_or("");
+        let hex = hex.split_whitespace().next().unwrap_or("");
+        u32::from_str_radix(hex.trim(), 16).map(|a| a & !1).map_err(|_| format!("не разобрать PC: {s}"))
+    }
+
+    /// Instruction at `pc` from the ELF (`objdump`). OpenOCD's disassembler is not used:
+    /// this ST build has no Capstone and answers with an error.
+    fn insn_text(&mut self, pc: u32) -> Result<String, String> {
+        let pc = pc & !1;
+        if let Some(text) = self.st.disasm.iter().find(|l| l.addr == pc).map(|l| l.text.clone()) {
+            return Ok(text);
+        }
+        self.fill_disasm(pc).ok();
+        Ok(self.st.disasm.iter().find(|l| l.addr == pc).map(|l| l.text.clone()).unwrap_or_default())
+    }
+
+    fn fill_disasm(&mut self, pc: u32) -> Result<(), String> {
+        let Some(path) = self.st.elf.as_ref().map(|e| e.path.clone()) else {
+            return Err("ELF не загружен — список инструкций не из чего собрать. Сначала «Собрать».".into());
+        };
+        let start = pc.saturating_sub(16) & !1;
+        let text = elf::objdump_range(&path, &self.toolchain, start, pc.saturating_add(80))?;
+        let lines = debug::parse_disasm(&text);
+        if lines.is_empty() {
+            return Err("В ELF нет инструкций вокруг PC.".into());
+        }
+        self.st.disasm = lines;
+        Ok(())
+    }
+
+    /// File and 1-based line at PC. `None` without an ELF or without DWARF for this address.
+    fn line_at(&mut self) -> Option<(String, u32)> {
+        let pc = self.read_pc().ok()?;
+        let elf = self.st.elf.as_ref()?;
+        let p = elf::place(elf, &self.toolchain, pc)?;
+        Some((p.file, p.line))
+    }
+
+    /// Walk instructions until the source line changes. A call is entered or skipped.
+    /// Stops on a repeated PC so a one-line loop cannot flood ST-Link.
+    fn step_line(&mut self, into: bool) -> Result<(), String> {
+        let Some(start) = self.line_at() else {
+            if self.st.elf.is_none() {
+                self.toast(Tone::Warn, "ELF не загружен — шаг на одну инструкцию. Сначала «Собрать».");
+            } else {
+                self.toast(Tone::Warn, "Для этого адреса нет строки исходника — шаг на одну инструкцию.");
+            }
+            return self.step_insn();
+        };
+        let mut seen = Vec::new();
+        for _ in 0..12 {
+            let pc = self.read_pc()?;
+            if seen.contains(&pc) {
+                self.toast(Tone::Info, "Эта строка зациклена — останов здесь. Точка останова или Продолжить (F5).");
+                return Ok(());
+            }
+            seen.push(pc);
+            let text = self.insn_text(pc)?;
+            if debug::is_call(&text) {
+                if into {
+                    return self.step_insn();
+                }
+                return self.run_to(pc.wrapping_add(4));
+            }
+            self.step_insn()?;
+            if self.line_at().as_ref() != Some(&start) {
+                return Ok(());
+            }
+        }
+        self.toast(Tone::Info, "Длинная строка — останов после нескольких инструкций. Ещё раз F10 продолжит её.");
+        Ok(())
+    }
+
+    /// `Ok(true)` means the core was running and this call only halted it.
+    fn ensure_halted(&mut self) -> Result<bool, String> {
+        self.swd_refresh_state();
+        if self.st.swd_state == "halted" {
+            return Ok(false);
+        }
+        self.ocd_eval("halt")?;
+        self.swd_refresh_state();
+        if self.st.swd_state != "halted" {
+            return Err(format!("не удалось остановить ядро ({})", self.st.swd_state));
+        }
+        Ok(true)
+    }
+
+    fn swd_step(&mut self, kind: StepKind) -> Result<bool, String> {
+        if self.ensure_halted()? {
+            self.toast(Tone::Info, "Ядро остановлено на текущей строке. Ещё раз F10 или F11 — следующий шаг.");
+            return Ok(true);
+        }
+        match kind {
+            StepKind::Into => self.step_line(true)?,
+            StepKind::Over => self.step_line(false)?,
+            StepKind::Out => {
+                let lr = self.reg("lr");
+                let Some(ret) = debug::step_out_target(lr, &self.st.frames) else {
+                    return Err("некуда выходить: адрес возврата не в программе".into());
+                };
+                self.run_to(ret)?;
+            }
+        }
+        Ok(false)
+    }
+
+    fn swd_bp(&mut self, addr: u32, set: bool) {
+        let addr = addr & !1;
+        if matches!(self.swd, Some(Swd::Real(_))) {
+            let cmd = if set { format!("bp 0x{addr:08x} 2 hw") } else { format!("rbp 0x{addr:08x}") };
+            let set_res = match self.swd.as_mut() {
+                Some(Swd::Real(o)) => o.eval(&cmd),
+                _ => return,
+            };
+            if let Err(e) = set_res {
+                self.toast(Tone::Err, format!("Точка останова: {e}"));
+                return;
+            }
+            let listed = match self.swd.as_mut() {
+                Some(Swd::Real(o)) => o.capture("bp"),
+                _ => return,
+            };
+            match listed {
+                Ok(s) => self.st.breaks = debug::parse_breakpoints(&s),
+                Err(e) => self.toast(Tone::Warn, e),
+            }
+            self.toast(Tone::Ok, if set { format!("Точка 0x{addr:08X}") } else { format!("Снята 0x{addr:08X}") });
+            return;
+        }
+        match self.swd.as_mut() {
+            Some(Swd::Sim) => {
+                if set {
+                    if !self.st.breaks.contains(&addr) {
+                        self.st.breaks.push(addr);
+                    }
+                    self.toast(Tone::Info, "На симуляторе точка только в списке, ядро не останавливается");
+                } else {
+                    self.st.breaks.retain(|a| *a != addr);
+                }
+            }
+            None => self.toast(Tone::Warn, "SWD не подключён"),
+            Some(Swd::Real(_)) => {}
+        }
+    }
+
     fn spawn_bg(&mut self, name: &str, mut cmd: Command, reload_elf: bool) {
         if self.bg.is_some() {
             self.toast(Tone::Warn, "Дождитесь окончания текущей операции");
@@ -523,6 +747,9 @@ impl Eng {
             let sep = if cfg!(windows) { ";" } else { ":" };
             let path = std::env::var("PATH").unwrap_or_default();
             c.env("PATH", format!("{}{}{}", toolchain, sep, path));
+        } else if let Some(extra) = crate::core::config::cube_toolchain_path() {
+            let path = std::env::var("PATH").unwrap_or_default();
+            c.env("PATH", format!("{};{}", extra, path));
         } else if cfg!(target_os = "macos") {
             // GUI apps start without the shell PATH: add Homebrew
             let path = std::env::var("PATH").unwrap_or_default();
@@ -645,24 +872,62 @@ impl Eng {
                 self.swd = None;
                 self.st.swd = None;
                 self.st.regs.clear();
+                self.st.disasm.clear();
+                self.st.frames.clear();
+                self.st.breaks.clear();
             }
             Job::SwdCtl(c) => {
                 match self.swd.as_mut() {
-                    Some(Swd::Real(o)) => {
-                        if let Err(e) = o.eval(c) {
-                            self.toast(Tone::Err, format!("{}: {}", c, e));
-                        }
-                    }
+                    Some(Swd::Real(_)) => {}
                     Some(Swd::Sim) => {
                         if c.starts_with("reset") {
                             self.sim.xfer(&frame(&[CMD_RESET]));
                         }
                         self.toast(Tone::Info, format!("Симулятор: «{}» имитирован", c));
+                        self.swd_refresh_state();
                     }
                     None => self.toast(Tone::Warn, "SWD не подключён"),
                 }
-                self.swd_refresh_state();
-                self.run(Job::SwdRegs);
+                if !matches!(self.swd, Some(Swd::Real(_))) {
+                    // simulator and disconnected are handled above
+                } else {
+                    self.swd_refresh_state();
+                    let already = (c == "resume" && self.st.swd_state == "running") || (c == "halt" && self.st.swd_state == "halted");
+                    if c == "resume" && self.st.swd_state == "running" {
+                        self.toast(Tone::Info, "Ядро уже выполняется. Пауза — F6, шаг по строке — F10.");
+                    } else if !already {
+                        let err = match self.swd.as_mut() {
+                            Some(Swd::Real(o)) => o.eval(c).err(),
+                            _ => None,
+                        };
+                        if let Some(e) = err {
+                            self.toast(Tone::Err, ctl_fail(c, &e));
+                            if c == "resume" || c.starts_with("reset") {
+                                let _ = self.ocd_eval("halt");
+                            }
+                        }
+                    }
+                    self.swd_refresh_state();
+                    if self.st.swd_state == "halted" {
+                        self.run(Job::SwdRegs);
+                    }
+                }
+            }
+            Job::SwdStep(kind) => {
+                if !matches!(self.swd, Some(Swd::Real(_))) {
+                    self.toast(Tone::Info, "Шаг по функциям работает на живом ST-Link");
+                } else {
+                    match self.swd_step(kind) {
+                        Err(e) => {
+                            self.toast(Tone::Err, e);
+                            self.swd_refresh_state();
+                        }
+                        Ok(_) => self.swd_refresh_state(),
+                    }
+                    if self.st.swd_state == "halted" {
+                        self.run(Job::SwdRegs);
+                    }
+                }
             }
             Job::SwdRegs => {
                 let regs = match self.swd.as_mut() {
@@ -683,7 +948,10 @@ impl Eng {
                     Err(e) => self.toast(Tone::Err, e),
                 }
                 self.swd_refresh_state();
+                self.swd_listing();
             }
+            Job::SwdBpSet(addr) => self.swd_bp(addr, true),
+            Job::SwdBpClr(addr) => self.swd_bp(addr, false),
             Job::ReadDiag => {
                 if matches!(self.swd, Some(Swd::Sim)) {
                     let s = self.sim.status();
@@ -853,4 +1121,18 @@ impl Eng {
             }
         }
     }
+}
+
+fn cmd_timed_out(e: &str) -> bool {
+    let l = e.to_lowercase();
+    l.contains("timed out") || l.contains("timeout") || l.contains("semaphore") || l.contains("таймаут") || l.contains("истекл")
+}
+
+fn ctl_fail(cmd: &str, err: &str) -> String {
+    let what = match cmd {
+        "resume" => "Не удалось продолжить",
+        "halt" => "Не удалось остановить ядро",
+        _ => "Команда отладки не прошла",
+    };
+    format!("{what}: {err}")
 }

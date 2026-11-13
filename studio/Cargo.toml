@@ -1,7 +1,7 @@
 [package]
 name = "f103-studio"
 description = "F103 Studio — отладочная студия для STM32F103C8T (Blue Pill) + FreeRTOS: справочник MCU, плата, UART-протокол, RTOS-монитор, SWD"
-version = "0.1.3"
+version = "0.1.10"
 edition = "2021"
 license = "MIT"
 

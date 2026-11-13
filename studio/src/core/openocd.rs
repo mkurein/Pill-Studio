@@ -4,6 +4,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,27 +25,111 @@ pub struct OcdConfig {
     pub under_reset: bool,
 }
 
+/// Upstream OpenOCD. CubeIDE's build does not ship these names next to the exe
+/// and its `hla_swd` path recurses in `swj_newdap`.
+const LEGACY_ARGS: &[&str] = &[
+    "-f",
+    "interface/stlink.cfg",
+    "-c",
+    "transport select hla_swd",
+    "-f",
+    "target/stm32f1x.cfg",
+];
+
 impl Default for OcdConfig {
     fn default() -> Self {
-        OcdConfig {
-            exe: "openocd".into(),
-            args: vec![
+        let mut args: Vec<String> = LEGACY_ARGS.iter().map(|s| (*s).to_string()).collect();
+        if let Some(scripts) = cube_scripts() {
+            args = vec![
+                "-s".into(),
+                scripts.to_string_lossy().into_owned(),
                 "-f".into(),
-                "interface/stlink.cfg".into(),
+                "interface/stlink-dap.cfg".into(),
                 "-c".into(),
-                "transport select hla_swd".into(),
+                "transport select dapdirect_swd".into(),
                 "-f".into(),
                 "target/stm32f1x.cfg".into(),
-            ],
-            under_reset: false,
+            ];
         }
+        OcdConfig { exe: "openocd".into(), args, under_reset: false }
     }
 }
 
+impl OcdConfig {
+    /// Saved installs still have the HLA defaults. Those cannot start CubeIDE OpenOCD.
+    pub fn for_this_machine(mut self) -> Self {
+        let legacy = self.args.iter().map(String::as_str).eq(LEGACY_ARGS.iter().copied());
+        if legacy {
+            self.args = OcdConfig::default().args;
+        }
+        self
+    }
+}
+
+/// `.../plugins/com.st.stm32cube.ide.mcu.debug.openocd_*/resources/openocd/st_scripts`
+fn cube_scripts() -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let mut plugins = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let exe = dir.join("openocd.exe");
+            if !exe.exists() {
+                continue;
+            }
+            // tools/bin → tools → plugin → plugins
+            if let Some(dir) = dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                if dir.file_name().and_then(|s| s.to_str()) == Some("plugins") {
+                    plugins.push(dir.to_path_buf());
+                }
+            }
+        }
+    }
+    if let Ok(st) = std::fs::read_dir(r"C:\ST") {
+        for ide in st.flatten() {
+            let dir = ide.path().join("STM32CubeIDE").join("plugins");
+            if dir.is_dir() {
+                plugins.push(dir);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for plugins_dir in plugins {
+        let Ok(rd) = std::fs::read_dir(&plugins_dir) else { continue };
+        for ent in rd.flatten() {
+            let name = ent.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("com.st.stm32cube.ide.mcu.debug.openocd_") {
+                continue;
+            }
+            let scripts = ent.path().join("resources").join("openocd").join("st_scripts");
+            if scripts.join("interface").join("stlink-dap.cfg").is_file() {
+                found.push(scripts);
+            }
+        }
+    }
+    found.sort();
+    found.pop()
+}
+
 fn last_error(lines: &[String]) -> String {
-    lines.iter().rev().find(|l| l.starts_with("Error")).cloned().unwrap_or_else(|| {
-        lines.last().cloned().unwrap_or_else(|| "OpenOCD завершился без вывода".into())
-    })
+    if let Some(line) = lines.iter().rev().find(|l| l.contains("Error:")) {
+        let msg = line.rsplit("Error:").next().unwrap_or(line).trim();
+        if !msg.is_empty() {
+            return msg.to_string();
+        }
+    }
+    lines
+        .iter()
+        .rev()
+        .find(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with("at file") && !t.starts_with("in procedure")
+        })
+        .cloned()
+        .or_else(|| lines.last().cloned())
+        .unwrap_or_else(|| "OpenOCD завершился без вывода".into())
 }
 
 impl OpenOcd {
@@ -64,7 +149,7 @@ impl OpenOcd {
         }
         let mut child = cmd.spawn().map_err(|e| format!("не удалось запустить «{}»: {} (путь — в Настройках)", cfg.exe, e))?;
         let log = Arc::new(Mutex::new(Vec::<String>::new()));
-        if let Some(err) = child.stderr.take() {
+        let mut reader = child.stderr.take().map(|err| {
             let log2 = log.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(err).lines().map_while(Result::ok) {
@@ -74,11 +159,14 @@ impl OpenOcd {
                         l.drain(..100);
                     }
                 }
-            });
-        }
+            })
+        });
         let t0 = Instant::now();
         loop {
             if let Ok(Some(status)) = child.try_wait() {
+                if let Some(h) = reader.take() {
+                    let _ = h.join();
+                }
                 let lines = log.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let mut msg = last_error(&lines);
                 if msg.contains("unable to connect to the target") || msg.contains("init mode failed") {
@@ -110,6 +198,12 @@ impl OpenOcd {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Bound one TCL reply. A step into WFI otherwise blocks this socket for the
+    /// connect timeout and the UI queues more commands behind it.
+    pub fn set_read_timeout(&mut self, d: Duration) {
+        self.sock.set_read_timeout(Some(d)).ok();
+    }
+
     /// Run a TCL command, return its result text.
     pub fn cmd(&mut self, c: &str) -> Result<String, String> {
         let mut msg = c.as_bytes().to_vec();
@@ -129,6 +223,11 @@ impl OpenOcd {
             }
         }
         Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
+    /// Command output as text (`capture` keeps what OpenOCD would print).
+    pub fn capture(&mut self, c: &str) -> Result<String, String> {
+        self.eval(&format!("capture {{{c}}}"))
     }
 
     /// Like `cmd`, but turns TCL errors into Err (wrapped with `catch`).
@@ -161,10 +260,10 @@ impl OpenOcd {
         self.eval("[target current] curstate").unwrap_or_else(|e| format!("? ({})", e))
     }
 
-    /// Core registers (halts the CPU if needed, restores the run state).
+    /// Core registers. A running core is halted and left halted: resuming here
+    /// raced with the user's Continue and surfaced as a red "resume" error.
     pub fn core_regs(&mut self) -> Result<Vec<(String, u32)>, String> {
-        let was_running = self.state() == "running";
-        if was_running {
+        if self.state() != "halted" {
             self.eval("halt")?;
         }
         let mut out = vec![];
@@ -175,9 +274,6 @@ impl OpenOcd {
             if let Some(v) = s.rsplit("0x").next().and_then(|h| u32::from_str_radix(h.trim(), 16).ok()) {
                 out.push((r.to_string(), v));
             }
-        }
-        if was_running {
-            self.eval("resume")?;
         }
         Ok(out)
     }
@@ -234,6 +330,33 @@ pub fn cfsr_ru(cfsr: u32) -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_tcl_line_is_not_the_message() {
+        let lines = vec![
+            "embedded:startup.tcl:28: Error: Can't find interface/stlink.cfg".into(),
+            "in procedure 'script'".into(),
+            "at file \"embedded:startup.tcl\", line 28".into(),
+        ];
+        assert_eq!(last_error(&lines), "Can't find interface/stlink.cfg");
+    }
+
+    #[test]
+    fn legacy_hla_args_follow_cubeide_when_present() {
+        let legacy = OcdConfig {
+            exe: "openocd".into(),
+            args: LEGACY_ARGS.iter().map(|s| (*s).to_string()).collect(),
+            under_reset: false,
+        };
+        let fixed = legacy.for_this_machine();
+        if cube_scripts().is_some() {
+            assert!(fixed.args.iter().any(|a| a.ends_with("st_scripts")));
+            assert!(fixed.args.iter().any(|a| a == "interface/stlink-dap.cfg"));
+            assert!(!fixed.args.iter().any(|a| a.contains("hla_swd")));
+        } else {
+            assert_eq!(fixed.args, OcdConfig::default().args);
+        }
+    }
 
     #[test]
     fn cfsr_decoding() {

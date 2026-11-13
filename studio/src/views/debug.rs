@@ -1,8 +1,9 @@
-//! SWD debugging: connection, run control, core registers, fault analysis
-//! from g_diag with source lines, variables by symbol, build / flash / hil.py
-//! autotest, OpenOCD console.
+//! SWD debugging: a halted-core view (disassembly, registers, call stack,
+//! breakpoints), fault analysis from g_diag, symbols, build / flash / hil.py,
+//! OpenOCD console.
 
 use crate::app::Shared;
+use crate::core::debug::{self, StepKind};
 use crate::core::elf;
 use crate::core::openocd::cfsr_ru;
 use crate::core::proto;
@@ -14,69 +15,350 @@ use eframe::egui::{self, RichText};
 pub struct St {
     sym: String,
     console: String,
+    bp: String,
+    /// Last two register snapshots, so a changed value stays highlighted.
+    seen: Vec<(String, u32)>,
+    prev: Vec<(String, u32)>,
+    /// addr2line is a process; keep the last answer instead of spawning it every frame.
+    pc_at: Option<u32>,
+    pc_txt: String,
+    frame_at: Vec<u32>,
+    frame_txt: Vec<String>,
+    /// None: source follows PC. Some: a function or stack frame the user opened.
+    browse: Option<u32>,
+    fnq: String,
+    src_key: Option<u32>,
+    src_title: String,
+    src_line: u32,
+    src_lines: Vec<String>,
+    src_scroll: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        h1(ui, &p, "SWD-отладка", "ST-Link + OpenOCD: чтение памяти и регистров без остановки программы, разбор сбоев, сборка, прошивка и автотест.");
-        ui.columns(2, |cols| {
-            card(&mut cols[0], &p, "Подключение и ход программы", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if sh.swd_ok() {
-                        if ui.button("Отключить").clicked() {
-                            sh.job(Job::SwdClose);
+        h1(
+            ui,
+            &p,
+            "SWD-отладка",
+            "Шаг идёт по строкам исходника. F5 продолжить, F6 пауза, F10 следующая строка, F11 зайти в функцию, Shift+F11 выйти, F9 точка, Shift+F5 отключить.",
+        );
+        if st.seen != sh.st.regs {
+            if !st.seen.is_empty() {
+                st.prev.clone_from(&st.seen);
+            }
+            st.seen.clone_from(&sh.st.regs);
+        }
+        let pc = sh.st.regs.iter().find(|r| r.0 == "pc").map(|r| r.1);
+        if st.pc_at != pc || st.frame_at != sh.st.frames {
+            st.pc_at = pc;
+            st.pc_txt = pc
+                .and_then(|a| sh.st.elf.as_ref().map(|e| elf::where_is(e, &sh.cfg.toolchain_dir, a)))
+                .unwrap_or_else(|| "ELF не загружен".into());
+            st.frame_at.clone_from(&sh.st.frames);
+            st.frame_txt = st
+                .frame_at
+                .iter()
+                .map(|a| sh.st.elf.as_ref().map(|e| elf::where_is(e, &sh.cfg.toolchain_dir, *a)).unwrap_or_else(|| "—".into()))
+                .collect();
+        }
+        let halted = sh.st.swd_state == "halted";
+        let running = sh.st.swd_state == "running";
+        if !sh.busy {
+            let keys: Vec<(bool, bool, egui::Key)> = ui.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((modifiers.shift, modifiers.ctrl || modifiers.command, *key)),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            for (shift, ctrl, key) in keys {
+                if ctrl && !(shift && key == egui::Key::F5) {
+                    continue;
+                }
+                match (shift, ctrl, key) {
+                    (true, true, egui::Key::F5) if sh.swd_ok() => sh.job(Job::SwdCtl("reset run")),
+                    (false, false, egui::Key::F5) if !sh.swd_ok() => {
+                        sh.job(Job::SwdOpen(sh.cfg.ocd.clone()));
+                    }
+                    (false, false, egui::Key::F5) if halted => {
+                        st.browse = None;
+                        sh.job(Job::SwdCtl("resume"));
+                    }
+                    (false, false, egui::Key::F6) if sh.swd_ok() && !halted => {
+                        st.browse = None;
+                        sh.job(Job::SwdCtl("halt"));
+                    }
+                    (true, false, egui::Key::F5) if sh.swd_ok() => sh.job(Job::SwdClose),
+                    (false, false, egui::Key::F9) if sh.swd_ok() => {
+                        if let Some(a) = st.browse.or(pc) {
+                            let a = a & !1;
+                            if sh.st.breaks.contains(&a) {
+                                sh.job(Job::SwdBpClr(a));
+                            } else {
+                                sh.job(Job::SwdBpSet(a));
+                            }
                         }
+                    }
+                    (false, false, egui::Key::F10) if sh.swd_ok() => {
+                        st.browse = None;
+                        sh.job(Job::SwdStep(StepKind::Over));
+                    }
+                    (false, false, egui::Key::F11) if sh.swd_ok() => {
+                        st.browse = None;
+                        sh.job(Job::SwdStep(StepKind::Into));
+                    }
+                    (true, false, egui::Key::F11) if sh.swd_ok() => {
+                        st.browse = None;
+                        sh.job(Job::SwdStep(StepKind::Out));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        card(ui, &p, "", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if sh.swd_ok() {
+                    let (label, color) = if halted {
+                        ("остановлено", p.warn)
+                    } else if running {
+                        ("выполняется", p.ok)
                     } else {
-                        if primary(ui, &p, "Подключить ST-Link").clicked() {
-                            sh.job(Job::SwdOpen(sh.cfg.ocd.clone()));
-                        }
-                        if ui.button("Симулятор").clicked() {
-                            sh.job(Job::SwdSim);
-                        }
+                        (sh.st.swd_state.as_str(), p.muted)
+                    };
+                    badge(ui, &p, label, color);
+                    if ui.button("Отключить").clicked() {
+                        sh.job(Job::SwdClose);
                     }
-                    let on = sh.swd_ok();
-                    for (t, c, h) in [
-                        ("⏸ Стоп", "halt", "остановить ядро (все задачи замрут)"),
-                        ("▶ Пуск", "resume", "продолжить выполнение"),
-                        ("⤼ Шаг", "step", "одна инструкция"),
-                        ("↻ Сброс", "reset run", "аппаратный сброс и запуск"),
-                    ] {
-                        if ui.add_enabled(on, egui::Button::new(t)).on_hover_text(h).clicked() {
-                            sh.job(Job::SwdCtl(c));
-                        }
+                } else {
+                    badge(ui, &p, "нет связи", p.muted);
+                    if primary(ui, &p, "Подключить ST-Link").clicked() {
+                        sh.job(Job::SwdOpen(sh.cfg.ocd.clone()));
                     }
-                    if ui.add_enabled(on, egui::Button::new("Регистры ядра")).clicked() {
-                        sh.job(Job::SwdRegs);
+                    if ui.button("Симулятор").clicked() {
+                        sh.job(Job::SwdSim);
+                    }
+                }
+                let on = sh.swd_ok() && !sh.busy;
+                let pause_on = on && !halted;
+                let go_on = on && halted;
+                for (t, c, en, h) in [
+                    ("Пауза  F6", "halt", pause_on, "остановить ядро и показать строку исходника"),
+                    ("Продолжить  F5", "resume", go_on, "пустить остановленное ядро. Пока оно выполняется, кнопка серая — это нормально"),
+                    ("Сброс", "reset run", on, "аппаратный сброс и запуск"),
+                ] {
+                    if ui.add_enabled(en, egui::Button::new(t)).on_hover_text(h).clicked() {
+                        if c == "halt" || c == "resume" {
+                            st.browse = None;
+                        }
+                        sh.job(Job::SwdCtl(c));
+                    }
+                }
+                let step_hint = if halted {
+                    "шаг по строке исходника"
+                } else {
+                    "ядро выполняется: первое нажатие остановит его на текущей строке, второе — шагнёт дальше"
+                };
+                for (t, k, h) in [
+                    ("В функцию  F11", StepKind::Into, format!("{step_hint}. Если в строке вызов — зайти в подпрограмму")),
+                    ("Строка  F10", StepKind::Over, format!("{step_hint}. Вызов выполняется целиком")),
+                    ("Выйти  Shift+F11", StepKind::Out, format!("{step_hint}. До возврата из текущей функции")),
+                ] {
+                    if ui.add_enabled(on, egui::Button::new(t)).on_hover_text(h).clicked() {
+                        st.browse = None;
+                        sh.job(Job::SwdStep(k));
+                    }
+                }
+            });
+            if let Some(s) = &sh.st.swd {
+                let id = sh.st.idcode.map(|v| format!("IDCODE 0x{v:08X}")).unwrap_or_default();
+                ui.label(
+                    RichText::new(format!(
+                        "{s} · {} · {id}",
+                        sh.st.swd_voltage.clone().unwrap_or_default()
+                    ))
+                    .small()
+                    .color(p.fg2),
+                );
+                if !halted {
+                    hint(ui, &p, "Ядро выполняется, поэтому «Продолжить» серое. F6, F10 или F11 остановят на текущей строке. Следующее нажатие F10/F11 шагает дальше.");
+                }
+            } else {
+                hint(ui, &p, "Не подключено. Провода SWD, BOOT0 = 0, питание. Если ST-Link молчит — «подключение под сбросом» в Настройках (нужен провод NRST).");
+            }
+            if let Some(pc) = pc {
+                ui.label(RichText::new(format!("PC  {pc:08X}   {}", st.pc_txt)).monospace().color(if halted { p.accent } else { p.fg }).size(15.0));
+            }
+            ui.horizontal(|ui| {
+                let r = ui.add(
+                    egui::TextEdit::singleline(&mut st.bp)
+                        .hint_text("адрес или символ: 0x08001234, main, prvIdleTask")
+                        .desired_width(360.0)
+                        .font(egui::TextStyle::Monospace),
+                );
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let sym = sh.st.elf.as_ref().and_then(|e| e.sym(st.bp.trim())).map(|s| s.addr);
+                let addr = debug::resolve_addr(st.bp.trim(), sym);
+                if ui.add_enabled(sh.swd_ok() && addr.is_some(), egui::Button::new("Точка останова")).clicked() || (enter && addr.is_some()) {
+                    if let Some(a) = addr {
+                        sh.job(Job::SwdBpSet(a));
+                    }
+                }
+            });
+            if !sh.st.breaks.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for a in sh.st.breaks.clone() {
+                        let name = sh.st.elf.as_ref().and_then(|e| e.func_at(a)).map(|s| s.name.as_str()).unwrap_or("");
+                        let label = if name.is_empty() { format!("{a:08X}  ✕") } else { format!("{name}  ✕") };
+                        if ui.small_button(label).on_hover_text(format!("снять 0x{a:08X}")).clicked() {
+                            sh.job(Job::SwdBpClr(a));
+                        }
                     }
                 });
-                if let Some(s) = &sh.st.swd {
-                    ui.label(format!(
-                        "{} · состояние: {} · {} · IDCODE {}",
-                        s,
-                        sh.st.swd_state,
-                        sh.st.swd_voltage.clone().unwrap_or_default(),
-                        sh.st.idcode.map(|v| format!("0x{:08X} (DEV_ID 0x{:03X} = medium density)", v, v & 0xFFF)).unwrap_or_default()
-                    ));
-                } else {
-                    hint(ui, &p, "Не подключено. Если ST-Link не видит MCU — проверьте провода SWD, BOOT0 = 0, питание; включите «подключение под сбросом» в Настройках (нужен провод NRST).");
+            }
+        });
+        ui.add_space(8.0);
+        ui.columns(2, |cols| {
+            card(&mut cols[0], &p, "Программа", |ui| {
+                let focus = st.browse.or(pc);
+                if st.src_key != focus {
+                    st.src_key = focus;
+                    st.src_scroll = true;
+                    st.src_lines.clear();
+                    st.src_line = 0;
+                    st.src_title.clear();
+                    if let (Some(addr), Some(e)) = (focus, sh.st.elf.as_ref()) {
+                        let project = std::path::PathBuf::from(&sh.cfg.project_dir);
+                        if let Some(pl) = elf::place(e, &sh.cfg.toolchain_dir, addr) {
+                            let short = pl.file.rsplit(['/', '\\']).next().unwrap_or(&pl.file);
+                            st.src_title = format!("{}   {short}:{}", pl.func, pl.line);
+                            st.src_line = pl.line;
+                            match elf::source_file(&project, &pl.file) {
+                                Some(path) => match std::fs::read_to_string(&path) {
+                                    Ok(text) => st.src_lines = text.lines().map(|s| s.to_string()).collect(),
+                                    Err(err) => st.src_title = format!("{} — {err}", st.src_title),
+                                },
+                                None => st.src_title = format!("{} — файл не найден", st.src_title),
+                            }
+                        } else if let Some(f) = e.func_at(addr) {
+                            st.src_title = format!("{} +0x{:x} — в ELF нет номера строки", f.name, (addr & !1) - f.addr);
+                        }
+                    }
                 }
-                if !sh.st.regs.is_empty() {
-                    egui::Grid::new("core_regs").num_columns(4).spacing([14.0, 2.0]).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if st.browse.is_some() {
+                        ui.label(RichText::new("открыта функция, не место останова").small().color(p.warn));
+                        if ui.small_button("К останову").clicked() {
+                            st.browse = None;
+                        }
+                    } else if st.src_title.is_empty() {
+                        hint(ui, &p, "Остановите ядро. Нужен ELF: кнопка «Собрать» ниже кладёт build/primGPT.elf.");
+                    }
+                });
+                if !st.src_title.is_empty() {
+                    ui.label(RichText::new(&st.src_title).monospace().color(p.accent));
+                }
+                egui::ScrollArea::vertical().id_salt("src").max_height(280.0).show(ui, |ui| {
+                    for (i, line) in st.src_lines.iter().enumerate() {
+                        let n = (i as u32) + 1;
+                        let here = n == st.src_line;
+                        let mark = if here { "▸" } else { " " };
+                        let color = if here { p.accent } else { p.fg2 };
+                        let resp = ui.label(RichText::new(format!("{mark}{n:4}  {line}")).monospace().small().color(color));
+                        if here && st.src_scroll {
+                            resp.scroll_to_me(Some(egui::Align::Center));
+                            st.src_scroll = false;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(RichText::new("Дизассемблер").strong().color(p.fg));
+                if sh.st.disasm.is_empty() {
+                    hint(
+                        ui,
+                        &p,
+                        if running {
+                            "Ядро выполняется. «Пауза» остановит его и покажет инструкции вокруг PC."
+                        } else if halted {
+                            "Остановлено, но в ELF нет инструкций по этому адресу. Соберите прошивку ещё раз."
+                        } else {
+                            "Подключите ST-Link и остановите ядро."
+                        },
+                    );
+                }
+                egui::ScrollArea::vertical().id_salt("disasm").max_height(320.0).show(ui, |ui| {
+                    for line in &sh.st.disasm {
+                        let here = pc.is_some_and(|pc| line.addr == (pc & !1));
+                        let mark = if here { "▸" } else { " " };
+                        let color = if here { p.accent } else { p.fg2 };
+                        ui.label(RichText::new(format!("{mark} {:08X}  {}", line.addr, line.text)).monospace().small().color(color));
+                    }
+                });
+            });
+            card(&mut cols[1], &p, "Функции, регистры, стек", |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut st.fnq).hint_text("фильтр: uart, Led, main").desired_width(220.0));
+                });
+                let q = st.fnq.trim().to_ascii_lowercase();
+                egui::ScrollArea::vertical().id_salt("fns").max_height(150.0).show(ui, |ui| {
+                    let Some(e) = &sh.st.elf else {
+                        hint(ui, &p, "Список функций берётся из ELF. Сначала соберите прошивку.");
+                        return;
+                    };
+                    let mut n = 0;
+                    for s in e.syms.iter().filter(|s| s.func && (q.is_empty() || s.name.to_ascii_lowercase().contains(&q))) {
+                        if n == 40 {
+                            hint(ui, &p, "показаны первые 40 — уточните фильтр");
+                            break;
+                        }
+                        n += 1;
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(st.browse == Some(s.addr), &s.name).clicked() {
+                                st.browse = Some(s.addr);
+                            }
+                            if ui.add_enabled(sh.swd_ok(), egui::Button::new("●")).on_hover_text("точка останова на входе").clicked() {
+                                sh.job(Job::SwdBpSet(s.addr));
+                            }
+                        });
+                    }
+                    if n == 0 {
+                        hint(ui, &p, "нет такой функции");
+                    }
+                });
+                ui.add_space(6.0);
+                if sh.st.regs.is_empty() {
+                    hint(ui, &p, "Появятся после паузы. Изменившиеся с прошлого останова значения подсвечиваются.");
+                } else {
+                    egui::Grid::new("core_regs").num_columns(4).spacing([10.0, 2.0]).show(ui, |ui| {
                         for (i, (n, v)) in sh.st.regs.iter().enumerate() {
-                            ui.label(RichText::new(n).monospace().color(p.muted));
-                            ui.label(RichText::new(format!("0x{:08X}", v)).monospace());
+                            let changed = st.prev.iter().any(|(pn, pv)| pn == n && pv != v);
+                            ui.label(RichText::new(n).monospace().small().color(p.muted));
+                            ui.label(RichText::new(format!("{v:08X}")).monospace().small().color(if changed { p.warn } else { p.fg }));
                             if i % 2 == 1 {
                                 ui.end_row();
                             }
                         }
                     });
-                    if let (Some(pc), Some(e)) = (sh.st.regs.iter().find(|r| r.0 == "pc"), &sh.st.elf) {
-                        ui.label(RichText::new(format!("PC → {}", elf::where_is(e, &sh.cfg.toolchain_dir, pc.1))).color(p.accent));
+                }
+                ui.add_space(6.0);
+                ui.label(RichText::new("Стек вызовов").strong().color(p.fg));
+                if sh.st.frames.is_empty() {
+                    hint(ui, &p, "PC и адрес возврата — когда ядро остановлено.");
+                } else {
+                    for (i, a) in sh.st.frames.iter().enumerate() {
+                        let place = st.frame_txt.get(i).map(String::as_str).unwrap_or("—");
+                        let label = format!("#{i}  {a:08X}  {place}");
+                        if ui.selectable_label(st.browse == Some(*a), RichText::new(label).monospace().small()).clicked() {
+                            st.browse = Some(*a);
+                        }
                     }
                 }
             });
-            card(&mut cols[1], &p, "Анализ сбоя (g_diag)", |ui| {
+        });
+        ui.add_space(8.0);
+        card(ui, &p, "Анализ сбоя (g_diag)", |ui| {
                 ui.horizontal(|ui| {
                     if ui.add_enabled(sh.swd_ok(), egui::Button::new("Прочитать g_diag")).clicked() {
                         sh.job(Job::ReadDiag);
@@ -130,7 +412,6 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     hint(ui, &p, &format!("CFSR сейчас: 0x{:08X} {}", cfsr, cfsr_ru(cfsr).join("; ")));
                 }
             });
-        });
         ui.add_space(8.0);
         ui.columns(2, |cols| {
             card(&mut cols[0], &p, "Переменная по имени (из ELF)", |ui| {

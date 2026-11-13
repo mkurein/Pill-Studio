@@ -290,6 +290,11 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.hyperlink_to(
+                        RichText::new("github.com/mkurein/F103C8T").small(),
+                        "https://github.com/mkurein/F103C8T",
+                    );
+                    ui.label(RichText::new("Developer Kurein MN").small().color(p.muted));
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(p.muted));
                     if let Some(s) = sh.st.status {
                         ui.label(

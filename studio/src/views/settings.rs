@@ -36,7 +36,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui.add(egui::TextEdit::singleline(&mut d.toolchain_dir).hint_text("пусто = PATH; Windows: …\\STM32CubeIDE\\plugins\\…gnu-tools…\\tools\\bin").desired_width(520.0));
                 ui.end_row();
             });
-            hint(ui, &p, "macOS: «make -j8» → build/primGPT.elf. Windows с CubeIDE: «make -C Debug all -j8» → Debug/primGPT.elf (укажите папку toolchain).");
+            hint(ui, &p, "Команда выполняется в папке проекта. Здесь прошивка собирается корневым Makefile: «make -j8» → build/primGPT.elf. Каталога Debug в репозитории нет. Если папка toolchain пустая, на Windows студия сама находит make и arm-none-eabi-gcc из STM32CubeIDE.");
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut st.elf).hint_text("путь к .elf вручную").desired_width(420.0));
                 if ui.button("Загрузить ELF").clicked() && !st.elf.trim().is_empty() {
@@ -57,7 +57,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui.checkbox(&mut d.ocd.under_reset, "подключение под сбросом (нужен провод NRST)");
                 ui.end_row();
             });
-            hint(ui, &p, "Аргументы через пробел; фразы в кавычках — одним аргументом. Для OpenOCD из STM32CubeIDE: -f interface/stlink-dap.cfg -c \"transport select dapdirect_swd\" -f target/stm32f1x.cfg и -s <путь к st_scripts>.");
+            hint(ui, &p, "Аргументы через пробел; фразы в кавычках — одним аргументом. OpenOCD из STM32CubeIDE не видит скрипты сам: нужен -s …\\st_scripts, interface/stlink-dap.cfg и transport select dapdirect_swd. Старые аргументы stlink.cfg + hla_swd студия подменяет сама.");
             if ui.small_button("Вернуть по умолчанию").clicked() {
                 d.ocd = OcdConfig::default();
                 st.ocd_args = join_args(&d.ocd.args);

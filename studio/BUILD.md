@@ -4,7 +4,7 @@ F103 Studio — отладочная программа для платы STM32F
 Исходники лежат в папке `studio/` этого репозитория, крейт называется `f103-studio`.
 Прошивка собирается отдельно, из корня репозитория: `make -C Debug all -j8`.
 
-Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml` (сейчас `0.1.3`). Нужен Rust 1.88 или новее.
+Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml` (сейчас `0.1.10`). Нужен Rust 1.88 или новее.
 
 ## Windows
 
@@ -56,9 +56,9 @@ powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
 Скрипт прогоняет `cargo test`, собирает release и вызывает Inno Setup. На выходе:
 
 ```text
-studio\release\v0.1.3\F103-Studio-v0.1.3-windows-x64-setup.exe
-studio\release\v0.1.3\F103-Studio-v0.1.3-windows-x64.zip
-studio\release\v0.1.3\checksum.txt
+studio\release\v0.1.10\F103-Studio-v0.1.10-windows-x64-setup.exe
+studio\release\v0.1.10\F103-Studio-v0.1.10-windows-x64.zip
+studio\release\v0.1.10\checksum.txt
 ```
 
 `setup.exe` ставит программу в профиль пользователя: `%LOCALAPPDATA%\Programs\F103 Studio`. Права администратора не нужны. Галочка «ярлык на рабочем столе» в мастере уже включена.
@@ -106,9 +106,9 @@ python3 build_macos.py --open
 На выходе (вместо `arm64` будет `x64` или `universal`):
 
 ```text
-studio/release/v0.1.3/F103-Studio-v0.1.3-macos-arm64.dmg
-studio/release/v0.1.3/F103-Studio-v0.1.3-macos-arm64.app.zip
-studio/release/v0.1.3/checksum.txt
+studio/release/v0.1.10/F103-Studio-v0.1.10-macos-arm64.dmg
+studio/release/v0.1.10/F103-Studio-v0.1.10-macos-arm64.app.zip
+studio/release/v0.1.10/checksum.txt
 ```
 
 Первый запуск скачанного приложения: правый клик по `F103 Studio.app` → «Открыть». Если приложение уже скопировано в «Программы»:

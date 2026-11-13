@@ -18,7 +18,7 @@
 
 Копии на рабочем столе и в `tools\` — одни и те же скрипты. Ниже пути
 на рабочий стол, как при проверке; для репозитория замените папку на
-`C:\Project\ProjectSTM32\F103C8T\tools`.
+`C:\Project\ProjectSTM32\Pill-Studio\tools`.
 
 ## Что нужно
 
@@ -78,7 +78,7 @@ python "$([Environment]::GetFolderPath('Desktop'))\uart_check.py" 02 00 --cmd CO
 Из `tools\`:
 
 ```powershell
-cd C:\Project\ProjectSTM32\F103C8T\tools
+cd C:\Project\ProjectSTM32\Pill-Studio\tools
 python .\uart_check.py
 python .\uart_check.py 70 01
 python .\uart_check.py 02 00 --cmd COM3 --log COM5
@@ -115,8 +115,8 @@ python .\uart_check.py 02 00 --cmd COM3 --log COM5
 Репозиторий:
 
 ```powershell
-& "C:\Program Files\Git\bin\bash.exe" "C:\Project\ProjectSTM32\F103C8T\tools\uart_check.sh"
-& "C:\Program Files\Git\bin\bash.exe" "C:\Project\ProjectSTM32\F103C8T\tools\uart_check.sh" COM3 COM5
+& "C:\Program Files\Git\bin\bash.exe" "C:\Project\ProjectSTM32\Pill-Studio\tools\uart_check.sh"
+& "C:\Program Files\Git\bin\bash.exe" "C:\Project\ProjectSTM32\Pill-Studio\tools\uart_check.sh" COM3 COM5
 ```
 
 В окне самого Git Bash:

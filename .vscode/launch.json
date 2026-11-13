@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "Attach to Pill Studio (OpenOCD :3333)",
-      "cwd": "${workspaceFolder:F103C8T}",
-      "executable": "${workspaceFolder:F103C8T}/build/primGPT.elf",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/primGPT.elf",
       "request": "attach",
       "type": "cortex-debug",
       "servertype": "external",
@@ -18,12 +18,12 @@
       },
       "showDevDebugOutput": "parsed",
       "device": "STM32F103C8",
-      "svdFile": "${workspaceFolder:F103C8T}/STM32F103.svd"
+      "svdFile": "${workspaceFolder}/STM32F103.svd"
     },
     {
       "name": "Debug (OpenOCD)",
-      "cwd": "${workspaceFolder:F103C8T}",
-      "executable": "${workspaceFolder:F103C8T}/Debug/primGPT.elf",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/Debug/primGPT.elf",
       "request": "launch",
       "type": "cortex-debug",
       "runToEntryPoint": "main",
@@ -32,18 +32,18 @@
       "serverpath": "C:/ST/STM32CubeIDE_1.17.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.openocd.win32_2.4.100.202501161620/tools/bin/openocd.exe",
       "configFiles": ["primGPT Debug.cfg"],
       "searchDir": [
-        "${workspaceFolder:F103C8T}",
+        "${workspaceFolder}",
         "C:/ST/STM32CubeIDE_1.17.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.debug.openocd_2.3.200.202510310951/resources/openocd/st_scripts"
       ],
       "preLaunchTask": "Build",
       "showDevDebugOutput": "parsed",
       "device": "STM32F103C8",
-      "svdFile": "${workspaceFolder:F103C8T}/STM32F103.svd"
+      "svdFile": "${workspaceFolder}/STM32F103.svd"
     },
     {
       "name": "Attach (OpenOCD)",
-      "cwd": "${workspaceFolder:F103C8T}",
-      "executable": "${workspaceFolder:F103C8T}/Debug/primGPT.elf",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/Debug/primGPT.elf",
       "request": "attach",
       "type": "cortex-debug",
       "servertype": "openocd",
@@ -51,12 +51,12 @@
       "serverpath": "C:/ST/STM32CubeIDE_1.17.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.openocd.win32_2.4.100.202501161620/tools/bin/openocd.exe",
       "configFiles": ["primGPT Debug.cfg"],
       "searchDir": [
-        "${workspaceFolder:F103C8T}",
+        "${workspaceFolder}",
         "C:/ST/STM32CubeIDE_1.17.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.debug.openocd_2.3.200.202510310951/resources/openocd/st_scripts"
       ],
       "showDevDebugOutput": "parsed",
       "device": "STM32F103C8",
-      "svdFile": "${workspaceFolder:F103C8T}/STM32F103.svd"
+      "svdFile": "${workspaceFolder}/STM32F103.svd"
     }
   ]
 }

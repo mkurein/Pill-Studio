@@ -1,0 +1,92 @@
+//! Screenshot tour for visual checks: `APP_SHOTS=<dir> f103-studio`
+//! walks every view (dark theme, then light),
+//! saves `NN_name.bmp` into `<dir>` and closes the window. No extra crates:
+//! the frames are written as plain 24-bit BMP.
+
+use crate::app::{View, NAV};
+use eframe::egui::{self, ColorImage};
+use std::path::PathBuf;
+
+/// (view, dark theme): every screen dark, then every screen light.
+fn steps() -> Vec<(View, bool)> {
+    let mut v: Vec<_> = NAV.iter().map(|n| (n.0, true)).collect();
+    v.extend(NAV.iter().map(|n| (n.0, false)));
+    v
+}
+
+pub struct Shots {
+    dir: PathBuf,
+    idx: usize,
+    frames: u32,
+    pending: bool,
+}
+
+impl Shots {
+    pub fn from_env() -> Option<Shots> {
+        let dir = PathBuf::from(std::env::var_os("APP_SHOTS")?);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(Shots { dir, idx: 0, frames: 0, pending: false })
+    }
+
+    /// The step to show now: (view, dark).
+    pub fn current(&self) -> Option<(View, bool)> {
+        steps().get(self.idx).copied()
+    }
+
+    /// Call once per frame after drawing.
+    pub fn tick(&mut self, ctx: &egui::Context) {
+        let Some((view, dark)) = self.current() else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        };
+        let image = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(img) = image {
+            let name = format!("{:02}_{:?}_{}.bmp", self.idx + 1, view, if dark { "dark" } else { "light" });
+            let _ = write_bmp(&self.dir.join(name), &img);
+            self.idx += 1;
+            self.frames = 0;
+            self.pending = false;
+        } else if !self.pending {
+            self.frames += 1;
+            // let layout and animations settle
+            // the virtual board needs a few seconds to fill charts and logs
+            let settle = if self.idx == 0 { 240 } else { 25 };
+            if self.frames > settle {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                self.pending = true;
+            }
+        }
+        ctx.request_repaint();
+    }
+}
+
+fn write_bmp(path: &std::path::Path, img: &ColorImage) -> std::io::Result<()> {
+    let [w, h] = img.size;
+    let row = (w * 3).div_ceil(4) * 4;
+    let size = 54 + row * h;
+    let mut b = Vec::with_capacity(size);
+    b.extend_from_slice(b"BM");
+    b.extend_from_slice(&(size as u32).to_le_bytes());
+    b.extend_from_slice(&[0; 4]);
+    b.extend_from_slice(&54u32.to_le_bytes());
+    b.extend_from_slice(&40u32.to_le_bytes());
+    b.extend_from_slice(&(w as i32).to_le_bytes());
+    b.extend_from_slice(&(h as i32).to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes());
+    b.extend_from_slice(&24u16.to_le_bytes());
+    b.extend_from_slice(&[0; 24]);
+    for y in (0..h).rev() {
+        let start = b.len();
+        for x in 0..w {
+            let c = img.pixels[y * w + x];
+            b.extend_from_slice(&[c.b(), c.g(), c.r()]);
+        }
+        b.resize(start + row, 0);
+    }
+    std::fs::write(path, b)
+}

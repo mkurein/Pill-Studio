@@ -59,6 +59,6 @@
 | [notes/](notes/) | BOOT_ALGORITHM, README_UART (таймаут), README_RAM_RTOS (память), README_INTERRUPTS |
 | [lessons/](lessons/) | мини-уроки 01–06, PROJECT_FIRMWARE_LESSON |
 | [`tools/RUN.md`](../tools/RUN.md) | хост `uart_check.py` / `.sh` из PowerShell |
-| [`studio/`](../studio/) | F103 Studio — GUI (Rust egui): справочник MCU, UART, RTOS-монитор |
+| [`studio/`](../studio/README.md) | F103 Studio — GUI (Rust egui): плата, MCU, регистры по SWD, UART-протокол, RTOS-монитор, разбор сбоев, сборка/прошивка/автотест; ADR-014 |
 
 Если модели нужен кусок оттуда — давать раздел, не файл целиком.

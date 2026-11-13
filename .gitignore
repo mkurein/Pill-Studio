@@ -25,3 +25,4 @@ build/
 tools/hil.json
 # Rust studio build output
 studio/target/
+studio/release/

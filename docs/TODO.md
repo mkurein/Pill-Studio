@@ -10,6 +10,7 @@
 ## Done in branch hil-studio (2026-11)
 
 T1–T7 закрыты: см. ADR-011..013, PROTOCOL.md.
+F103 Studio (`studio/`, ADR-014): GUI на egui, виртуальная плата, `.app`/`.dmg`.
 
 ## Previously current
 

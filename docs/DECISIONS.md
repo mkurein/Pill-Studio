@@ -87,3 +87,14 @@ Reason: AI-агент и человек проверяют прошивку на
 Корневой `Makefile` (arm-none-eabi-gcc из PATH) собирает в `build/`, не трогая
 `Debug/` CubeIDE. Новые `.c` в `Core/Src` подхватываются автоматически.
 Reason: сборка на macOS и в CI без генерации `Debug/makefile`.
+
+## ADR-014 — F103 Studio: нативная GUI-студия на Rust egui
+
+`studio/` — отдельный крейт (eframe 0.33, без WebView): справочник MCU и платы,
+регистры из `STM32F103.svd` с чтением по SWD (OpenOCD TCL RPC), консоль
+протокола USART1, монитор FreeRTOS по STATUS, лог USART3, разбор `g_diag`,
+сборка / прошивка / `hil.py test`. Виртуальная плата (`studio/src/core/sim.rs`)
+повторяет протокол и лог прошивки. Константы протокола — `studio/src/core/proto.rs`.
+Reason: отладка и обучение без PDF и IDE на macOS и Windows; тот же HIL-цикл, что у агента.
+Rule: меняется протокол / STATUS / `diag_t` → обновить `proto.rs`, `sim.rs`,
+`core/mod.rs` в том же commit.

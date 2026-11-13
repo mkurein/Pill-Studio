@@ -1,4 +1,4 @@
-//! Reference articles: how the STM32F103 and this firmware work, so the PDF is
+//! Reference articles: how the STM32F103 (and, first article, the F411) and this firmware work, so the PDF is
 //! needed only for the deepest details. Each article links to a studio screen.
 
 use crate::app::{Act, Shared, View};
@@ -15,6 +15,21 @@ struct Art {
     goto: Option<(View, &'static str)>,
     body: &'static [&'static str],
 }
+
+/// Shown first when the Black Pill is selected: what differs from the F103 articles below.
+const F411_ART: Art = Art {
+    title: "0. Black Pill (F411): что иначе",
+    goto: Some((View::Mcu, "Тактирование")),
+    body: &[
+        "STM32F411CEU6 — ядро Cortex-M4F до 100 МГц (в проекте 96) с FPU и DSP-инструкциями, Flash 512 КБ, SRAM 128 КБ, корпус UFQFPN48. Порт FreeRTOS — ARM_CM4F: при переключении задач сохраняются регистры FPU.",
+        "Тактирование: кварц HSE 25 МГц, PLL с делителями M/N/P/Q: 25 / 25 × 192 = VCO 192 МГц, / P 2 = SYSCLK 96 МГц, / Q 4 = 48 МГц для USB. APB1 /2 = 48 МГц (максимум 50), APB2 /1 = 96 МГц. Flash — 3 такта ожидания, ускоритель ART сглаживает задержки.",
+        "GPIO на F4 устроен иначе, чем на F1: вместо 4-битных CRL/CRH — отдельные регистры MODER (вход/выход/альт. функция/аналог), OTYPER, OSPEEDR, PUPDR и AFRL/AFRH с номером альтернативной функции AF0–AF15. Порты сидят на AHB1. ODR, IDR и BSRR — как на F1.",
+        "Выводы проекта те же: USART1 на PA9/PA10 (AF7) — протокол 38400, светодиод PC13 (0 = горит), метка кадров PC15, SPI1 на PA4–PA7. Лог вместо USART3/PB10 идёт в USART6, TX на PA11 (AF8) — это же линия USB D−, поэтому при логе USB-разъём для данных не используется.",
+        "На PA4–PA7 у WeAct Black Pill распаяна SPI NOR-флеш W25Q64 (8 МБ), а не FRAM. Команды WREN/RDSR у неё те же, но адрес 3-байтный и писать можно только в стёртое. Драйвер читает JEDEC ID (EF 40 17) и пишет через чтение-стирание-запись сектора 4 КБ, сохраняя остальное содержимое.",
+        "Отладка: OpenOCD с target/stm32f4x.cfg (студия подставляет сама), DBGMCU IDCODE 0x10006431 (DEV_ID 0x431), размер Flash в 0x1FFF7A22. Сбои разбираются так же: CFSR/HFSR/BFAR, g_diag в .noinit.",
+        "Статьи ниже написаны на примере F103: общие принципы (FreeRTOS, протокол, SWD, проверка изменений) одинаковы, числа и регистры для F411 смотрите на экранах «Контроллер» и «Регистры».",
+    ],
+};
 
 const ARTS: &[Art] = &[
     Art {
@@ -122,16 +137,18 @@ const ARTS: &[Art] = &[
 
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
-    h1(ui, &p, "Справочник", "Коротко о том, как устроены STM32F103 и эта прошивка — чтобы не открывать PDF ради каждой мелочи.");
+    let b = crate::core::boards::cur();
+    h1(ui, &p, "Справочник", &format!("Коротко о том, как устроены {} и эта прошивка — чтобы не открывать PDF ради каждой мелочи.", b.chip));
+    let arts: Vec<&Art> = if b.family == crate::core::boards::Family::F4 { std::iter::once(&F411_ART).chain(ARTS.iter()).collect() } else { ARTS.iter().collect() };
     egui::SidePanel::left("arts").resizable(false).exact_width(240.0).frame(egui::Frame::new()).show_inside(ui, |ui| {
-        for (i, a) in ARTS.iter().enumerate() {
+        for (i, a) in arts.iter().enumerate() {
             if ui.selectable_label(st.idx == i, a.title).clicked() {
                 st.idx = i;
             }
         }
     });
     egui::CentralPanel::default().frame(egui::Frame::new().inner_margin(egui::Margin { left: 16, ..Default::default() })).show_inside(ui, |ui| {
-        let a = &ARTS[st.idx.min(ARTS.len() - 1)];
+        let a = arts[st.idx.min(arts.len() - 1)];
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.set_max_width(ui.available_width().min(820.0));
             ui.label(RichText::new(a.title).size(19.0).strong());
@@ -149,7 +166,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 if st.idx > 0 && ui.button("← Назад").clicked() {
                     st.idx -= 1;
                 }
-                if st.idx + 1 < ARTS.len() && ui.button("Дальше →").clicked() {
+                if st.idx + 1 < arts.len() && ui.button("Дальше →").clicked() {
                     st.idx += 1;
                 }
             });

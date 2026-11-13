@@ -1,12 +1,12 @@
 [package]
-name = "f103-studio"
-description = "F103 Studio — отладочная студия для STM32F103C8T (Blue Pill) + FreeRTOS: справочник MCU, плата, UART-протокол, RTOS-монитор, SWD"
-version = "0.1.12"
+name = "pill-studio"
+description = "Pill Studio — отладочная студия для Blue Pill (STM32F103C8T) и Black Pill (STM32F411CEU) + FreeRTOS: справочник MCU, плата, UART-протокол, RTOS-монитор, SWD"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
 [[bin]]
-name = "f103-studio"
+name = "pill-studio"
 path = "src/main.rs"
 
 [dependencies]

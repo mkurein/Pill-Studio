@@ -14,7 +14,7 @@ pub struct St {
     periph: String,
     reg: usize,
     filter: String,
-    only_c8: bool,
+    only_part: bool,
     auto: bool,
     last_read: f64,
     draft: Option<u32>,
@@ -27,7 +27,7 @@ impl Default for St {
             periph: "GPIOC".into(),
             reg: 3,
             filter: String::new(),
-            only_c8: true,
+            only_part: true,
             auto: true,
             last_read: 0.0,
             draft: None,
@@ -89,21 +89,22 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(1000));
     }
 
-    h1(ui, &p, "Регистры", "Полный справочник из STM32F103.svd (CMSIS-SVD, тексты описаний — из файла ST, на английском). Значения — живые, по SWD.");
+    let b = crate::core::boards::cur();
+    h1(ui, &p, "Регистры", &format!("Полный справочник из {} (CMSIS-SVD, тексты описаний — из файла ST, на английском). Значения — живые, по SWD.", b.svd_name));
     egui::SidePanel::left("periph_list").resizable(true).default_width(220.0).frame(egui::Frame::new()).show_inside(ui, |ui| {
         ui.add(egui::TextEdit::singleline(&mut st.filter).hint_text("поиск: USART, BRR, ODR…"));
-        ui.checkbox(&mut st.only_c8, "только то, что есть в C8");
+        ui.checkbox(&mut st.only_part, format!("только то, что есть в {}", crate::core::boards::cur().chip));
         egui::ScrollArea::vertical().id_salt("plist").show(ui, |ui| {
             let f = st.filter.to_uppercase();
             for q in sh.svd.iter() {
-                if st.only_c8 && !q.in_c8 {
+                if st.only_part && !q.in_part {
                     continue;
                 }
                 if !f.is_empty() && !q.name.contains(&f) && !q.registers.iter().any(|r| r.name.contains(&f)) {
                     continue;
                 }
                 let sel = q.name == per.name;
-                let r = ui.selectable_label(sel, RichText::new(&q.name).monospace().color(if q.in_c8 { p.fg } else { p.muted }));
+                let r = ui.selectable_label(sel, RichText::new(&q.name).monospace().color(if q.in_part { p.fg } else { p.muted }));
                 let r = r.on_hover_text(format!("{} · 0x{:08X} · {}", q.desc, q.base, group_ru(&q.group)));
                 if r.clicked() {
                     st.select(&q.name.clone());
@@ -117,8 +118,8 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             ui.label(RichText::new(&per.name).size(18.0).strong());
             ui.label(RichText::new(format!("0x{:08X}", per.base)).monospace().color(p.accent));
             ui.label(RichText::new(&per.desc).color(p.fg2));
-            if !per.in_c8 {
-                badge(ui, &p, "нет в STM32F103C8", p.warn);
+            if !per.in_part {
+                badge(ui, &p, &format!("нет в {}", crate::core::boards::cur().chip), p.warn);
             }
         });
         ui.horizontal(|ui| {
@@ -232,7 +233,9 @@ fn register_detail(ui: &mut egui::Ui, sh: &Shared, st: &mut St, per: &Peripheral
             ui.label(RichText::new(bits).monospace().color(p.muted));
             let v = f.get(shown);
             let mut extra = String::new();
-            if per.group == "GPIO" && (f.name.starts_with("MODE") || f.name.starts_with("CNF")) {
+            if per.group == "GPIO" && (r.name == "MODER" || r.name == "OSPEEDR" || r.name == "PUPDR") {
+                extra = format!("  {}", svd::gpio_f4_ru(&r.name, v));
+            } else if per.group == "GPIO" && (r.name == "CRL" || r.name == "CRH") && (f.name.starts_with("MODE") || f.name.starts_with("CNF")) {
                 let pin = f.name.trim_start_matches(|c: char| c.is_ascii_alphabetic());
                 if let Ok(n) = pin.parse::<u32>() {
                     let sh_ = (n % 8) * 4;

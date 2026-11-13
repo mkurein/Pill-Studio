@@ -13,6 +13,16 @@
 BOOT0 = 0. Для полного автотеста нужны оба UART; с одним адаптером
 тесты другого канала помечаются SKIP.
 
+## Две платы
+
+`tools/hil.py` один и тот же в этом репозитории и в F411CE (Black Pill).
+Плата выбирается по линкер-скрипту в корне (`STM32F411CEUX_FLASH.ld` → F411) или
+`HIL_BOARD=f103|f411`: от неё зависят ELF (`primGPT.elf` / `primGPT_F411.elf`),
+цель OpenOCD (`stm32f1x.cfg` / `stm32f4x.cfg`), разбор GPIO (CRL/CRH или MODER)
+и проверка `swd: chip is …` по DEV_ID (0x410 / 0x431). Лог на F411 — USART6, TX PA11.
+На WeAct Black Pill вместо FRAM распаяна SPI NOR W25Q64: те же FRAM-тесты проходят,
+драйвер пишет через стирание сектора 4 КБ.
+
 ## Запуск
 
 ```bash

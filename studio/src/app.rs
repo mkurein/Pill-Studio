@@ -1,6 +1,7 @@
 //! Shell: navigation, top bar with link status, toasts, frame loop.
 //! Views get `&Shared` and queue `Act`s, which run after the frame.
 
+use crate::core::boards::{self, BoardId};
 use crate::core::config::Config;
 use crate::core::link::{self, PortInfo};
 use crate::core::svd::{self, Peripheral};
@@ -31,22 +32,24 @@ pub enum View {
 /// (view, icon, title, hint)
 pub const NAV: &[(View, &str, &str, &str)] = &[
     (View::Overview, "◉", "Обзор", "подключения и главное о плате"),
-    (View::Board, "▦", "Плата Blue Pill", "выводы, функции, что подключено"),
+    (View::Board, "▦", "Плата", "выводы, функции, что подключено"),
     (View::Mcu, "◫", "Контроллер", "структура, память, тактирование"),
     (View::Regs, "≣", "Регистры", "все регистры из SVD, живое чтение по SWD"),
     (View::Proto, "⇄", "UART-протокол", "команды, кадры, CRC, реакция платы"),
     (View::Rtos, "⟳", "FreeRTOS", "задачи, стеки, куча, счётчики"),
-    (View::Log, "☰", "Лог UART3", "текстовый лог прошивки"),
+    (View::Log, "☰", "Лог", "текстовый лог прошивки"),
     (View::Debug, "⚙", "SWD-отладка", "ядро, сбои, сборка, прошивка, автотест"),
-    (View::Learn, "✎", "Справочник", "как устроен STM32F103 и этот проект"),
+    (View::Learn, "✎", "Справочник", "как устроен контроллер и этот проект"),
     (View::Settings, "⚒", "Настройки", "порты, OpenOCD, пути"),
 ];
 
 pub enum Act {
-    Job(Job),
+    Job(Box<Job>),
     Go(View),
     Toast(Tone, String),
     SaveCfg(Box<Config>),
+    /// Switch the studio to another board (profile, SVD, project, ports).
+    Board(BoardId),
     RefreshPorts,
     Theme(bool),
     OpenPeriph(String),
@@ -73,7 +76,7 @@ impl Shared {
         self.acts.borrow_mut().push(a);
     }
     pub fn job(&self, j: Job) {
-        self.act(Act::Job(j));
+        self.act(Act::Job(Box::new(j)));
     }
     pub fn send(&self, body: Vec<u8>) {
         self.job(Job::Send { body, raw: false });
@@ -124,11 +127,15 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext) -> App {
-        let cfg = Config::load();
+        let mut cfg = Config::load();
+        // screenshot tour of another board: APP_BOARD=blackpill (not saved)
+        if let Some(id) = std::env::var("APP_BOARD").ok().and_then(|s| BoardId::ALL.into_iter().find(|b| b.key() == s)) {
+            cfg.switch_board(id);
+        }
         theme::install_fonts(&cc.egui_ctx);
         let pal = Pal::get(cfg.dark);
         theme::apply(&cc.egui_ctx, &pal);
-        let svd = Arc::new(svd::parse(svd::SVD_TEXT).unwrap_or_default());
+        let svd = Arc::new(svd::parse_board(boards::cur()));
         let worker = Worker::spawn(cc.egui_ctx.clone(), svd.clone(), &cfg);
         let shots = crate::shots::Shots::from_env();
         if shots.is_some() {
@@ -199,7 +206,7 @@ impl App {
 
     fn run(&mut self, ctx: &egui::Context, a: Act) {
         match a {
-            Act::Job(j) => self.worker.send(j),
+            Act::Job(j) => self.worker.send(*j),
             Act::Go(v) => self.sh.view = v,
             Act::Toast(t, s) => self.toast(t, s),
             Act::SaveCfg(c) => {
@@ -211,6 +218,24 @@ impl App {
                 }
                 self.sh.cfg = *c;
                 self.sh.cfg.save();
+            }
+            Act::Board(id) => {
+                if id == self.sh.cfg.board {
+                    return;
+                }
+                self.sh.cfg.switch_board(id);
+                self.sh.cfg.save();
+                let svd = Arc::new(svd::parse_board(boards::cur()));
+                self.sh.svd = svd.clone();
+                self.worker.send(Job::Board(svd, self.sh.cfg.project_dir.clone()));
+                self.vs = ViewState::default();
+                self.sh.txns.clear();
+                self.sh.lines.clear();
+                self.sh.samples.clear();
+                self.sh.st = State::default();
+                let b = boards::cur();
+                let proj = if self.sh.cfg.project_dir.is_empty() { "не найден — укажите в Настройках".to_string() } else { self.sh.cfg.project_dir.clone() };
+                self.toast(Tone::Info, format!("Плата: {} ({}). Проект: {}", b.board, b.chip, proj));
             }
             Act::RefreshPorts => self.sh.ports = link::list_ports(),
             Act::Theme(dark) => {
@@ -235,15 +260,35 @@ impl App {
             .frame(egui::Frame::new().fill(p.bg2).inner_margin(egui::Margin::symmetric(14, 8)))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("F103 Studio").size(17.0).strong().color(p.fg));
-                    ui.label(RichText::new("STM32F103C8T6 · Blue Pill · FreeRTOS").color(p.muted));
+                    ui.label(RichText::new("Pill Studio").size(17.0).strong().color(p.fg));
+                    let b = boards::cur();
+                    egui::ComboBox::from_id_salt("board")
+                        .selected_text(format!("{} · {}", b.board, b.chip))
+                        .show_ui(ui, |ui| {
+                            for id in BoardId::ALL {
+                                let q = id.profile();
+                                if ui.selectable_label(id == b.id, format!("{} · {} · {}", q.board, q.chip, q.core)).clicked() {
+                                    sh.act(Act::Board(id));
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text("Плата: выводы, SVD, тактирование, цель OpenOCD, ELF и порты — свои для каждой");
+                    // the chip on the SWD link is not the selected board
+                    if let Some(other) = sh.st.idcode.and_then(boards::by_idcode).filter(|o| *o != b.id) {
+                        let t = format!("⚠ по SWD {} — переключить", other.profile().board);
+                        if ui.button(RichText::new(t).color(p.warn)).clicked() {
+                            sh.act(Act::Board(other));
+                        }
+                    }
                     ui.add_space(12.0);
                     let uart = sh.st.proto.as_deref();
                     if chip(ui, &p, "UART1", uart.unwrap_or("нет"), uart.is_some()).clicked() {
                         sh.act(Act::Go(View::Overview));
                     }
                     let log = sh.st.log.as_deref();
-                    if chip(ui, &p, "UART3", log.unwrap_or("нет"), log.is_some()).clicked() {
+                    let log_name = boards::cur().log_uart.replace("USART", "UART");
+                    if chip(ui, &p, &log_name, log.unwrap_or("нет"), log.is_some()).clicked() {
                         sh.act(Act::Go(View::Log));
                     }
                     let swd = sh.st.swd.as_ref().map(|s| format!("{} · {}", s, sh.st.swd_state));
@@ -282,8 +327,14 @@ impl App {
             .exact_width(212.0)
             .frame(egui::Frame::new().fill(p.bg2).inner_margin(egui::Margin::symmetric(8, 10)))
             .show(ctx, |ui| {
+                let b = boards::cur();
                 for (v, icon, title, hint) in NAV {
                     let sel = sh.view == *v;
+                    let title = match v {
+                        View::Board => format!("{} {}", title, b.board),
+                        View::Log => format!("{} {}", title, b.log_uart.replace("USART", "UART")),
+                        _ => title.to_string(),
+                    };
                     let text = RichText::new(format!("{}  {}", icon, title)).size(14.0).color(if sel { p.accent } else { p.fg });
                     let r = ui
                         .add_sized([196.0, 30.0], egui::Button::selectable(sel, text))
@@ -293,10 +344,7 @@ impl App {
                     }
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-                    ui.hyperlink_to(
-                        RichText::new("github.com/mkurein/F103C8T").small(),
-                        "https://github.com/mkurein/F103C8T",
-                    );
+                    ui.hyperlink_to(RichText::new(b.repo).small(), format!("https://{}", b.repo));
                     ui.label(RichText::new("Developer Kurein MN").small().color(p.muted));
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(p.muted));
                     if let Some(s) = sh.st.status {

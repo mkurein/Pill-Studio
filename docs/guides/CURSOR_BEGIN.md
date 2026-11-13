@@ -24,7 +24,7 @@ C:\Project\ProjectSTM32\F103C8T
 
 Либо открыть `F103C8T.code-workspace`. Сборка, IntelliSense и F5 привязаны к папке с именем `F103C8T`, поэтому рядом могут лежать `AI` и архив `STM32F1_old`.
 
-> Раньше этот же репозиторий открывали как `STM32F1\primGPT`. Прошивка и отладка теперь здесь. `STM32F1_old\primGPT` — снимок на 22 сентября 2026, без правок T1–T7 и без F103 Studio.
+> Раньше этот же репозиторий открывали как `STM32F1\primGPT`. Прошивка и отладка теперь здесь. `STM32F1_old\primGPT` — снимок на 22 сентября 2026, без правок T1–T7 и без Pill Studio.
 
 ---
 
@@ -67,7 +67,7 @@ C:\Project\ProjectSTM32\F103C8T
 
 Та же цепочка, что работала в старой папке: OpenOCD из STM32CubeIDE, `primGPT Debug.cfg`, SVD `STM32F103.svd`, расширение Cortex-Debug и RTOS Views. Конфигурации — `.vscode/launch.json` и `.vscode/tasks.json`.
 
-Рядом есть второй вход к той же плате — **F103 Studio** (`studio/`, сборка в [studio/BUILD.md](../../studio/BUILD.md)): рисунок платы, протокол UART, лог UART3, регистры по SWD и виртуальная плата. Точки останова и шаги по коду остаются на `F5`.
+Рядом есть второй вход к той же плате — **Pill Studio** (`studio/`, сборка в [studio/BUILD.md](../../studio/BUILD.md)): рисунок платы, протокол UART, лог UART3, регистры по SWD и виртуальная плата. Точки останова и шаги по коду остаются на `F5`.
 
 ---
 

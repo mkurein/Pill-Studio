@@ -1,8 +1,9 @@
 //! Virtual board: answers the same USART1 frames as the firmware (main.c
-//! `handle_frame`), produces the USART3 log and plausible register values for
+//! `handle_frame`), produces the text log and plausible register values for
 //! the SWD views. Lets the studio be explored and tested without hardware.
 
 use super::proto::*;
+use super::boards::{self, Family};
 use super::svd::Peripheral;
 use std::time::Instant;
 
@@ -84,10 +85,13 @@ impl SimBoard {
             "BOOT fw={} rst=0x{:08X} boot={}",
             SIM_VERSION, self.reset_cause, self.boot_count
         ));
+        let nor = super::boards::cur().family == Family::F4;
         self.pending_log.push(format!(
-            "FRAM probe={} sr={}",
+            "FRAM probe={} sr={} mem={} jedec={}",
             if self.fram_present { "OK" } else { "FAIL" },
-            if self.fram_present { "02/00" } else { "FF/FF" }
+            if self.fram_present { "02/00" } else { "FF/FF" },
+            if nor && self.fram_present { "W25Q64" } else { "FRAM" },
+            if nor && self.fram_present { "EF4017" } else { "000000" }
         ));
         self.pending_log.push("Default Task running...".into());
         self.pending_log.push("Uart1Task started".into());
@@ -112,7 +116,7 @@ impl SimBoard {
                     "DIAG heap_free={} heap_min={} heap_total={} stk_free D={} L={} U={} rx={} crc_err={} uart_err=0",
                     st.heap_free,
                     st.heap_min,
-                    HEAP_TOTAL,
+                    heap_total(),
                     st.stack_free_default,
                     st.stack_free_led,
                     st.stack_free_uart,
@@ -127,14 +131,14 @@ impl SimBoard {
     pub fn status(&self) -> Status {
         let t = self.t0.elapsed().as_secs_f64();
         let wobble = ((t * 0.7).sin() * 24.0) as i32;
-        let heap_free = (HEAP_TOTAL as i32 - 7_840 - wobble.abs()) as u32;
+        let heap_free = (heap_total() as i32 - 7_840 - wobble.abs()) as u32;
         Status {
             uptime_ms: self.uptime_ms(),
             reset_cause: self.reset_cause,
             boot_count: self.boot_count,
             heartbeat: self.uptime_ms() / 1000,
             heap_free,
-            heap_min: heap_free.min(HEAP_TOTAL - 7_890 - self.heap_used_peak),
+            heap_min: heap_free.min(heap_total() - 7_890 - self.heap_used_peak),
             stack_free_default: 612,
             stack_free_led: 388,
             stack_free_uart: (1_404 - (self.rx_frames.min(40) * 2)) as u16,
@@ -244,6 +248,38 @@ impl SimBoard {
     pub fn read_word(&self, periphs: &[Peripheral], addr: u32) -> u32 {
         let pc13 = (self.led_odr as u32) << 13;
         let pc15 = (self.act_pin as u32) << 15;
+        let reset = || {
+            periphs
+                .iter()
+                .find_map(|p| p.registers.iter().find(|r| p.base + r.offset == addr).map(|r| r.reset))
+                .unwrap_or(0)
+        };
+        if boards::cur().family == Family::F4 {
+            return match addr {
+                0x4002_3800 => 0x0303_7583, // RCC_CR: HSE, PLL on and ready, HSI on
+                0x4002_3804 => 0x2440_3019, // RCC_PLLCFGR: M 25, N 192, P /2, Q 4, src HSE
+                0x4002_3808 => 0x0000_100A, // RCC_CFGR: SYSCLK = PLL, APB1 /2
+                0x4002_3830 => 0x0000_0087, // RCC_AHB1ENR: GPIOA/B/C/H
+                0x4002_3844 => 0x0000_5031, // RCC_APB2ENR: TIM1, USART1, USART6, SPI1
+                0x4002_3874 => self.reset_cause,
+                // GPIOA: PA4 out; PA5-7, PA9-12 AF; PA13-15 debug AF (reset)
+                0x4002_0000 => 0xAAA8_A900,
+                0x4002_0020 => 0x5550_0000, // AFRL: SPI1 AF5 on PA5..7
+                0x4002_0024 => 0x0008_8770, // AFRH: PA9/10 AF7, PA11/12 AF8
+                0x4002_0400 => 0x0000_0280, // GPIOB: PB3/PB4 debug AF after reset
+                0x4002_0800 => 0x4400_0000, // GPIOC_MODER: PC13, PC15 out
+                0x4002_0810 => 0x0000_8000 | pc13 | pc15,
+                0x4002_0814 => pc13 | pc15,
+                0x4001_1000 => 0x0000_00C0, // USART1_SR: TXE, TC
+                0x4001_1008 => 0x0000_09C4, // USART1_BRR 38400 @ 96 MHz
+                0x4001_100C => 0x0000_202C, // USART1_CR1: UE, RXNEIE, TE, RE
+                0x4001_1408 => 0x0000_0341, // USART6_BRR 115200 @ 96 MHz
+                0x4001_140C => 0x0000_200C,
+                0x4001_3000 => 0x0000_0374, // SPI1_CR1: master, /128, SSM, SPE
+                0xE004_2000 => 0x1000_6431, // DBGMCU_IDCODE: F411, rev A
+                _ => reset(),
+            };
+        }
         match addr {
             0x4002_1000 => 0x0303_0083, // RCC_CR: HSE, PLL on and ready
             0x4002_1004 => 0x001D_040A, // RCC_CFGR: PLL×9 from HSE, APB1 /2, SYSCLK = PLL
@@ -263,10 +299,7 @@ impl SimBoard {
             0x4000_480C => 0x0000_200C,
             0x4001_3000 => 0x0000_035C, // SPI1_CR1: master, /16, SSM, SPE
             0xE004_2000 => 0x2000_0410, // DBGMCU_IDCODE: medium density, rev X
-            _ => periphs
-                .iter()
-                .find_map(|p| p.registers.iter().find(|r| p.base + r.offset == addr).map(|r| r.reset))
-                .unwrap_or(0),
+            _ => reset(),
         }
     }
 }

@@ -14,11 +14,29 @@
 #define FRAM_WRITE        0x02
 
 #define FRAM_MEM_SIZE     0x8000
+#define FRAM_RDID         0x9F    /* JEDEC ID: NOR flash answers, most FRAMs do not */
+
+/* The same SPI footprint may carry an SPI NOR flash instead of the FRAM
+ * (WeAct Black Pill: W25Q64 on PA4..PA7). NOR needs 24-bit addresses and an
+ * erase before write; the driver handles it with a read-modify-write of 4 KB
+ * sectors (needs a 4 KB static buffer, so only on parts with enough RAM). */
+#ifndef SPI_NOR_SUPPORT
+#if defined(STM32F4)
+#define SPI_NOR_SUPPORT   1
+#else
+#define SPI_NOR_SUPPORT   0
+#endif
+#endif
+#define NOR_SECTOR_ERASE  0x20
+#define NOR_SECTOR_SIZE   4096u
+#define NOR_PAGE_SIZE     256u
 
 typedef struct {
     SPI_HandleTypeDef *hspi;
     GPIO_TypeDef *cs_port;
     uint16_t cs_pin;
+    uint32_t jedec;     /* 0x9F reply, MSB = manufacturer (0 / 0xFFFFFF: none) */
+    uint8_t  is_nor;    /* 1: SPI NOR flash detected, see SPI_NOR_SUPPORT */
 } fram_t;
 
 typedef struct
@@ -56,5 +74,6 @@ void fram_read(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count);
 void fram_write(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count);
 void fram_erase_all(fram_t *fram);
 int fram_probe(fram_t *fram, uint8_t sr_out[2]);
+const char *fram_kind(const fram_t *fram);   /* "FRAM", "W25Q64", "NOR" */
 
 #endif  // FRAM_H

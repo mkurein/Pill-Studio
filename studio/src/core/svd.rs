@@ -1,9 +1,9 @@
-//! CMSIS-SVD of the STM32F103xx family (repo root `STM32F103.svd`, embedded at
-//! compile time) → peripherals / registers / fields for the register browser.
+//! CMSIS-SVD of the board's family (repo root `STM32F103.svd` / `STM32F411.svd`,
+//! embedded at compile time, see `boards.rs`) → peripherals / registers / fields
+//! for the register browser.
 
 use std::collections::HashMap;
 
-pub const SVD_TEXT: &str = include_str!("../../../STM32F103.svd");
 
 #[derive(Clone, Debug)]
 pub struct Field {
@@ -43,8 +43,8 @@ pub struct Peripheral {
     pub base: u32,
     pub registers: Vec<Register>,
     pub irqs: Vec<(String, u32)>,
-    /// Present in the STM32F103C8 (medium density, LQFP48).
-    pub in_c8: bool,
+    /// Physically present in this exact part (the SVD covers the whole line).
+    pub in_part: bool,
 }
 
 impl Peripheral {
@@ -52,14 +52,6 @@ impl Peripheral {
         self.base + r.offset
     }
 }
-
-/// Peripherals that physically exist in STM32F103C8 (DS5319 Table 2 / Figure 1).
-pub const C8_PERIPHERALS: &[&str] = &[
-    "RCC", "FLASH", "PWR", "BKP", "RTC", "IWDG", "WWDG", "GPIOA", "GPIOB", "GPIOC", "GPIOD", "AFIO", "EXTI",
-    "DMA1", "TIM1", "TIM2", "TIM3", "TIM4", "USART1", "USART2", "USART3", "SPI1", "SPI2", "I2C1", "I2C2",
-    "ADC1", "ADC2", "CAN", "USB", "CRC", "DBG", "DBGMCU", "NVIC", "SCB", "STK", "MPU", "SCB_ACTRL",
-    "NVIC_STIR",
-];
 
 /// Reading this register changes hardware state (clears flags, pops FIFO):
 /// never read it automatically, the firmware would lose data.
@@ -89,7 +81,12 @@ fn clean(s: Option<&str>) -> String {
     s.unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub fn parse(svd: &str) -> Result<Vec<Peripheral>, String> {
+/// Peripherals of the board's SVD, those present in the part first.
+pub fn parse_board(b: &super::boards::Profile) -> Vec<Peripheral> {
+    parse(b.svd, b.present).unwrap_or_default()
+}
+
+pub fn parse(svd: &str, present: &[&str]) -> Result<Vec<Peripheral>, String> {
     let doc = roxmltree::Document::parse(svd).map_err(|e| e.to_string())?;
     let root = doc.root_element();
     let periphs = root.children().find(|c| c.has_tag_name("peripherals")).ok_or("в SVD нет <peripherals>")?;
@@ -133,7 +130,7 @@ pub fn parse(svd: &str) -> Result<Vec<Peripheral>, String> {
             .map(|i| (clean(text(i, "name")), num(text(i, "value")).unwrap_or(0)))
             .collect();
         let mut per = Peripheral {
-            in_c8: C8_PERIPHERALS.contains(&name.as_str()),
+            in_part: present.contains(&name.as_str()),
             name: name.clone(),
             desc: clean(text(p, "description")),
             group: clean(text(p, "groupName")),
@@ -156,7 +153,7 @@ pub fn parse(svd: &str) -> Result<Vec<Peripheral>, String> {
         by_name.insert(name, out.len());
         out.push(per);
     }
-    out.sort_by(|a, b| b.in_c8.cmp(&a.in_c8).then(a.base.cmp(&b.base)));
+    out.sort_by(|a, b| b.in_part.cmp(&a.in_part).then(a.base.cmp(&b.base)));
     Ok(out)
 }
 
@@ -171,6 +168,25 @@ pub fn gpio_mode_ru(mode: u32, cnf: u32) -> &'static str {
         (_, 1) => "выход open-drain",
         (_, 2) => "альт. функция push-pull",
         (_, _) => "альт. функция open-drain",
+    }
+}
+
+/// RM0383 §8.4: 2-bit fields of MODER / OSPEEDR / PUPDR → Russian.
+pub fn gpio_f4_ru(reg: &str, v: u32) -> &'static str {
+    match (reg, v & 3) {
+        ("MODER", 0) => "вход",
+        ("MODER", 1) => "выход",
+        ("MODER", 2) => "альт. функция",
+        ("MODER", _) => "аналог",
+        ("OSPEEDR", 0) => "низкая скорость",
+        ("OSPEEDR", 1) => "средняя скорость",
+        ("OSPEEDR", 2) => "быстрая",
+        ("OSPEEDR", _) => "очень быстрая",
+        ("PUPDR", 0) => "без подтяжки",
+        ("PUPDR", 1) => "подтяжка вверх",
+        ("PUPDR", 2) => "подтяжка вниз",
+        ("PUPDR", _) => "резерв",
+        _ => "",
     }
 }
 
@@ -189,7 +205,7 @@ mod tests {
 
     #[test]
     fn parses_embedded_svd() {
-        let ps = parse(SVD_TEXT).unwrap();
+        let ps = parse_board(&super::super::boards::BLUE_PILL);
         assert!(ps.len() > 40);
         let usart1 = ps.iter().find(|p| p.name == "USART1").unwrap();
         assert_eq!(usart1.base, 0x4001_3800);
@@ -203,8 +219,21 @@ mod tests {
         assert!(odr.fields.iter().any(|f| f.name == "ODR13" && f.offset == 13));
         let crl = gpioc.registers.iter().find(|r| r.name == "CRL").unwrap();
         assert_eq!(crl.reset, 0x4444_4444);
-        assert!(gpioc.in_c8);
-        assert!(!ps.iter().find(|p| p.name == "TIM8").map(|p| p.in_c8).unwrap_or(true));
+        assert!(gpioc.in_part);
+        assert!(!ps.iter().find(|p| p.name == "TIM8").map(|p| p.in_part).unwrap_or(true));
+    }
+
+    #[test]
+    fn parses_f411_svd() {
+        let ps = parse_board(&super::super::boards::BLACK_PILL);
+        let gpioc = ps.iter().find(|p| p.name == "GPIOC").unwrap();
+        assert_eq!(gpioc.base, 0x4002_0800);
+        let odr = gpioc.registers.iter().find(|r| r.name == "ODR").unwrap();
+        assert_eq!(odr.offset, 0x14);
+        assert!(gpioc.registers.iter().any(|r| r.name == "MODER"));
+        assert_eq!(ps.iter().find(|p| p.name == "USART6").unwrap().base, 0x4001_1400);
+        assert!(!ps.iter().find(|p| p.name == "GPIOD").unwrap().in_part);
+        assert!(ps.iter().find(|p| p.name == "SPI5").unwrap().in_part);
     }
 
     #[test]

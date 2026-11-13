@@ -72,6 +72,18 @@ impl Default for OcdConfig {
 }
 
 impl OcdConfig {
+    /// The same adapter settings with the target script of the selected board
+    /// (`target/stm32f1x.cfg` ↔ `target/stm32f4x.cfg`).
+    pub fn with_target(&self, target: &str) -> OcdConfig {
+        let mut c = self.clone();
+        for a in c.args.iter_mut() {
+            if a.starts_with("target/stm32") && a.ends_with(".cfg") {
+                *a = target.to_string();
+            }
+        }
+        c
+    }
+
     /// Saved installs still have the HLA defaults. Those cannot start CubeIDE OpenOCD.
     pub fn for_this_machine(mut self) -> Self {
         let legacy = self.args.iter().map(String::as_str).eq(LEGACY_ARGS.iter().copied());
@@ -359,6 +371,9 @@ mod tests {
 
     #[test]
     fn gdb_port_open_by_default_and_closable() {
+        let f4 = OcdConfig::default().with_target("target/stm32f4x.cfg");
+        assert!(f4.args.iter().any(|a| a == "target/stm32f4x.cfg"));
+        assert!(!f4.args.iter().any(|a| a == "target/stm32f1x.cfg"));
         let a = port_args(GDB_PORT).join(" ");
         assert!(a.contains("gdb_port 3333") && a.contains("tcl_port 6667"));
         assert!(port_args(0).join(" ").contains("gdb_port disabled"));

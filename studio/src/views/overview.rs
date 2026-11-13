@@ -86,8 +86,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     _ => ui.label(RichText::new("не подключено").color(p.muted)),
                 };
             });
-            card(&mut cols[1], &p, "UART3 — текстовый лог", |ui| {
-                hint(ui, &p, "PB10 (TX) → RX второго адаптера, GND общий. 115200. Только передача.");
+            let b = crate::core::boards::cur();
+            card(&mut cols[1], &p, &format!("{} — текстовый лог", b.log_uart.replace("USART", "UART")), |ui| {
+                hint(ui, &p, &format!("{} (TX) → RX второго адаптера, GND общий. 115200. Только передача.", b.log_tx));
                 ui.horizontal(|ui| port_combo(ui, sh, "log_port", &mut st.log_port));
                 ui.horizontal(|ui| {
                     if sh.st.log.is_some() {
@@ -212,7 +213,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 }
                 if sh.st.proto.as_deref() == Some("виртуальная плата") {
                     let mut fram = sh.st.sim_fram;
-                    if ui.checkbox(&mut fram, "виртуальная FRAM установлена").on_hover_text("снимите — и посмотрите, как прошивка сообщает об отказе микросхемы").changed() {
+                    if ui.checkbox(&mut fram, format!("виртуальная память ({}) установлена", crate::core::boards::cur().spi_mem)).on_hover_text("снимите — и посмотрите, как прошивка сообщает об отказе микросхемы").changed() {
                         sh.job(Job::SimFram(fram));
                     }
                 }

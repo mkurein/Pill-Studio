@@ -3,7 +3,7 @@
 
 use crate::app::Shared;
 use crate::canvas::Canvas;
-use crate::core::proto::{self, CMD_STATUS, HEAP_TOTAL, TASKS};
+use crate::core::proto::{self, CMD_STATUS};
 use crate::fmt;
 use crate::theme::mix;
 use crate::widgets::*;
@@ -65,7 +65,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     }
                     ui.end_row();
                     let free = [s.stack_free_default, s.stack_free_led, s.stack_free_uart];
-                    for (i, (name, prio, size, what)) in TASKS.iter().enumerate() {
+                    for (i, (name, prio, size, what)) in proto::tasks().iter().enumerate() {
                         let used = size.saturating_sub(free[i] as u32);
                         let frac = used as f32 / *size as f32;
                         ui.label(RichText::new(*name).monospace().strong()).on_hover_text(*what);
@@ -85,12 +85,13 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 hint(ui, &p, "Пик = размер − «высокая вода» (uxTaskGetStackHighWaterMark). < 128 Б свободно — пора увеличивать стек. Наведите на имя задачи — её назначение.");
             });
             card(&mut cols[1], &p, "Куча FreeRTOS (heap_4, 10 КБ)", |ui| {
-                let used = HEAP_TOTAL - s.heap_free;
-                let peak = HEAP_TOTAL - s.heap_min;
+                let heap_total = proto::heap_total();
+                let used = heap_total - s.heap_free;
+                let peak = heap_total - s.heap_min;
                 ui.label("Занято сейчас");
-                gauge(ui, &p, used as f32 / HEAP_TOTAL as f32, &format!("{} из {}", fmt::bytes(used), fmt::bytes(HEAP_TOTAL)), level(&p, used as f32 / HEAP_TOTAL as f32), ui.available_width());
+                gauge(ui, &p, used as f32 / heap_total as f32, &format!("{} из {}", fmt::bytes(used), fmt::bytes(heap_total)), level(&p, used as f32 / heap_total as f32), ui.available_width());
                 ui.label("Максимум за всё время (xPortGetMinimumEverFreeHeapSize)");
-                gauge(ui, &p, peak as f32 / HEAP_TOTAL as f32, &format!("{} — свободно минимум {}", fmt::bytes(peak), fmt::bytes(s.heap_min)), level(&p, peak as f32 / HEAP_TOTAL as f32), ui.available_width());
+                gauge(ui, &p, peak as f32 / heap_total as f32, &format!("{} — свободно минимум {}", fmt::bytes(peak), fmt::bytes(s.heap_min)), level(&p, peak as f32 / heap_total as f32), ui.available_width());
                 para(ui, &p, "Из кучи выделены: стеки трёх задач (3.5 КБ) и задач ядра, их TCB, очередь uartQueue (100 Б) и мьютекс лога. Во время работы память не выделяется — график должен быть ровным. Рост «занято» = утечка.");
             });
         });
@@ -177,7 +178,7 @@ fn flow(ui: &mut egui::Ui, sh: &Shared) {
         cv.text(415.0, 104.0, Align2::CENTER_BOTTOM, "ответ 01 · статус · данные · CRC", 11.0, p.accent);
         bx(220.0, 160.0, 170.0, "defaultTask", "Tick 1 с, DIAG 5 с", p.accent);
         bx(450.0, 160.0, 150.0, "log_mutex", "один писатель", p.sig);
-        bx(660.0, 160.0, 170.0, "USART3 → ПК", "115200, лог", p.refc);
+        bx(660.0, 160.0, 170.0, &format!("{} → ПК", crate::core::boards::cur().log_uart), "115200, лог", p.refc);
         ar(&[(390.0, 188.0), (450.0, 188.0)], p.accent);
         ar(&[(600.0, 188.0), (660.0, 188.0)], p.sig);
         bx(10.0, 160.0, 150.0, "LedTask", "PC13 раз в 1 с", p.warn);

@@ -254,7 +254,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                             st.browse = None;
                         }
                     } else if st.src_title.is_empty() {
-                        hint(ui, &p, "Остановите ядро. Нужен ELF: кнопка «Собрать» ниже кладёт build/primGPT.elf.");
+                        hint(ui, &p, &format!("Остановите ядро. Нужен ELF: кнопка «Собрать» ниже кладёт build/{}.", crate::core::boards::cur().elf));
                     }
                 });
                 if !st.src_title.is_empty() {
@@ -500,7 +500,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         ui.add_space(8.0);
         card(ui, &p, "Консоль OpenOCD (команды TCL)", |ui| {
             ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut st.console).hint_text("mdw 0x40011000 4 · reg pc · flash info 0 · stm32f1x options_read 0").desired_width(480.0).font(egui::TextStyle::Monospace));
+                let r = ui.add(egui::TextEdit::singleline(&mut st.console).hint_text(if crate::core::boards::cur().family == crate::core::boards::Family::F4 { "mdw 0x40020800 6 · reg pc · flash info 0 · stm32f2x options_read 0" } else { "mdw 0x40011000 4 · reg pc · flash info 0 · stm32f1x options_read 0" }).desired_width(480.0).font(egui::TextStyle::Monospace));
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if (ui.button("Выполнить").clicked() || enter) && !st.console.trim().is_empty() {
                     sh.job(Job::OcdExec(st.console.trim().to_string()));

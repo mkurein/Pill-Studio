@@ -1,12 +1,30 @@
 //! Persistent settings (JSON in the OS config dir): tool paths, ports, project.
 
+use super::boards::{self, BoardId};
 use super::openocd::OcdConfig;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+/// Settings that belong to one board (work and home can have different boards,
+/// projects and USB-UART adapters). The selected board's values live in the
+/// flat fields of `Config`; the others wait here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Slot {
+    pub project_dir: String,
+    pub build_cmd: String,
+    pub proto_port: String,
+    pub log_port: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Board selected in the studio (Blue Pill F103 / Black Pill F411).
+    pub board: BoardId,
+    /// Per-board settings of the boards not selected now, by `BoardId::key()`.
+    pub slots: BTreeMap<String, Slot>,
     /// Firmware project root (contains Core/, Makefile, build/).
     pub project_dir: String,
     pub ocd: OcdConfig,
@@ -26,6 +44,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            board: BoardId::BluePill,
+            slots: BTreeMap::new(),
             project_dir: default_project_dir(),
             ocd: OcdConfig::default(),
             toolchain_dir: String::new(),
@@ -41,6 +61,29 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Select another board: the current project, ports and build command are
+    /// stashed for the old board and the new board's ones come back.
+    pub fn switch_board(&mut self, to: BoardId) {
+        if to == self.board {
+            return;
+        }
+        let old = Slot {
+            project_dir: self.project_dir.clone(),
+            build_cmd: self.build_cmd.clone(),
+            proto_port: self.proto_port.clone(),
+            log_port: self.log_port.clone(),
+        };
+        self.slots.insert(self.board.key().into(), old);
+        let s = self.slots.remove(to.key()).unwrap_or_default();
+        let near = self.project_dir.clone();
+        self.board = to;
+        boards::set(to);
+        self.project_dir = if is_project_of(Path::new(&s.project_dir), to) { s.project_dir } else { guess_project(to, &near) };
+        self.build_cmd = if s.build_cmd.is_empty() { "make -j8".into() } else { s.build_cmd };
+        self.proto_port = s.proto_port;
+        self.log_port = s.log_port;
+    }
+
     /// Editor CLI to call on a stop, or `None` when following is off or no editor is found.
     pub fn editor(&self) -> Option<String> {
         if !self.editor_follow {
@@ -75,6 +118,37 @@ pub fn find_cursor() -> Option<String> {
         cands.push("/opt/cursor/resources/app/bin/cursor".into());
     }
     cands.into_iter().find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
+}
+
+/// The firmware repo of `board`: has Core/ and the board's linker script.
+fn is_project_of(dir: &Path, board: BoardId) -> bool {
+    dir.join("Core").is_dir() && dir.join(board.profile().marker).is_file()
+}
+
+/// Firmware project of `board`: the studio's own repo, a sibling of `near`
+/// (…/ProjectSTM/F103C8T ↔ …/ProjectSTM/F411CE) or ~/Project/ProjectSTM/*.
+pub fn guess_project(board: BoardId, near: &str) -> String {
+    let mut roots: Vec<PathBuf> = vec![];
+    let own = default_project_dir();
+    if !own.is_empty() {
+        if is_project_of(Path::new(&own), board) {
+            return own;
+        }
+        roots.extend(Path::new(&own).parent().map(Path::to_path_buf));
+    }
+    roots.extend(Path::new(near).parent().map(Path::to_path_buf));
+    if let Some(h) = dirs::home_dir() {
+        roots.push(h.join("Project").join("ProjectSTM"));
+    }
+    for r in roots {
+        let Ok(rd) = std::fs::read_dir(&r) else { continue };
+        let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| is_project_of(p, board)).collect();
+        dirs.sort();
+        if let Some(d) = dirs.into_iter().next() {
+            return d.canonicalize().unwrap_or(d).to_string_lossy().into_owned();
+        }
+    }
+    String::new()
 }
 
 /// The studio lives in `<project>/studio`: use the parent when it looks like the firmware.
@@ -139,6 +213,11 @@ pub fn cube_toolchain_path() -> Option<String> {
 }
 
 fn path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("pill-studio").join("config.json"))
+}
+
+/// Settings of the studio before it was renamed (F103 Studio ≤ 0.1.12).
+fn old_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("f103-studio").join("config.json"))
 }
 
@@ -146,11 +225,16 @@ impl Config {
     pub fn load() -> Config {
         let mut c: Config = path()
             .and_then(|p| std::fs::read_to_string(p).ok())
+            .or_else(|| old_path().and_then(|p| std::fs::read_to_string(p).ok()))
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
         c.ocd = c.ocd.for_this_machine();
-        if c.project_dir.is_empty() || !std::path::Path::new(&c.project_dir).join("Core").exists() {
-            c.project_dir = default_project_dir();
+        boards::set(c.board);
+        if !is_project_of(Path::new(&c.project_dir), c.board) {
+            let g = guess_project(c.board, &c.project_dir);
+            if !g.is_empty() || c.project_dir.is_empty() || !Path::new(&c.project_dir).join("Core").exists() {
+                c.project_dir = g;
+            }
         }
         c.build_cmd = build_cmd_for(std::path::Path::new(&c.project_dir), &c.build_cmd);
         c
@@ -174,6 +258,20 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn board_switch_keeps_each_boards_ports() {
+        let mut c = Config { proto_port: "/dev/a".into(), ..Config::default() };
+        c.switch_board(BoardId::BlackPill);
+        assert_eq!(c.board, BoardId::BlackPill);
+        assert_eq!(c.proto_port, "");
+        c.proto_port = "/dev/b".into();
+        c.switch_board(BoardId::BluePill);
+        assert_eq!(c.proto_port, "/dev/a");
+        c.switch_board(BoardId::BlackPill);
+        assert_eq!(c.proto_port, "/dev/b");
+        boards::set(BoardId::BluePill);
+    }
 
     #[test]
     fn missing_debug_dir_uses_root_makefile() {

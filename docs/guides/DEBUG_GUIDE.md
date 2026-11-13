@@ -28,7 +28,7 @@
 15. [Типичные сценарии отладки](#типичные-сценарии-отладки)
 16. [SWO трассировка](#swo-трассировка)
 17. [Горячие клавиши](#горячие-клавиши)
-18. [Отладка вместе с F103 Studio](#отладка-вместе-с-f103-studio)
+18. [Отладка вместе с Pill Studio](#отладка-вместе-с-pill-studio)
 19. [Troubleshooting](#troubleshooting)
 20. [Частые вопросы](#частые-вопросы)
 
@@ -826,7 +826,7 @@ RTOS: LedTask (Blocked)
 
 ---
 
-## Отладка вместе с F103 Studio
+## Отладка вместе с Pill Studio
 
 Студия и Cursor работают с одним OpenOCD: студия запускает его и говорит по TCL
 (порт 6667), Cursor подключается к его GDB-серверу (порт 3333). Два OpenOCD на
@@ -835,7 +835,7 @@ RTOS: LedTask (Blocked)
 1. В студии: «SWD-отладка» → «Подключить» (настройки — «Настройки» →
    «Отладка вместе с Cursor», порт 3333 по умолчанию).
 2. В Cursor: расширение **Cortex-Debug** (`marus25.cortex-debug`), конфигурация
-   **Attach to F103 Studio (OpenOCD :3333)** → F5. Нужен `arm-none-eabi-gdb`
+   **Attach to Pill Studio (OpenOCD :3333)** → F5. Нужен `arm-none-eabi-gdb`
    (macOS: Homebrew `/opt/homebrew/bin/arm-none-eabi-gdb`).
 3. При каждом останове студия вызывает `cursor -g файл:строка` — Cursor
    открывает строку (галочка в настройках студии; путь к `cursor` — там же).

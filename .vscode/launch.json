@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Attach to F103 Studio (OpenOCD :3333)",
+      "name": "Attach to Pill Studio (OpenOCD :3333)",
       "cwd": "${workspaceFolder:F103C8T}",
       "executable": "${workspaceFolder:F103C8T}/build/primGPT.elf",
       "request": "attach",

@@ -1,6 +1,7 @@
 //! Settings: project folder, toolchain, OpenOCD command line, ports, polling.
 
 use crate::app::{Act, Shared};
+use crate::core::boards::{self, BoardId};
 use crate::core::config::Config;
 use crate::core::openocd::OcdConfig;
 use crate::widgets::*;
@@ -23,7 +24,28 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     }
     let mut reset = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        h1(ui, &p, "Настройки", "Хранятся в папке настроек пользователя (f103-studio/config.json).");
+        h1(ui, &p, "Настройки", "Хранятся в папке настроек пользователя (pill-studio/config.json).");
+        card(ui, &p, "Плата", |ui| {
+            ui.horizontal(|ui| {
+                for id in BoardId::ALL {
+                    let q = id.profile();
+                    if ui.selectable_label(sh.cfg.board == id, format!("{} · {}", q.board, q.chip)).clicked() && sh.cfg.board != id {
+                        sh.act(Act::Board(id));
+                    }
+                }
+            });
+            let b = boards::cur();
+            hint(
+                ui,
+                &p,
+                &format!(
+                    "У каждой платы свои папка проекта, команда сборки и порты — переключение их меняет. \
+                     Сейчас: OpenOCD {}, ELF build/{}, лог {} ({}), DEV_ID 0x{:03X}. \
+                     Если по SWD ответит чип другой платы, вверху появится кнопка переключения.",
+                    b.ocd_target, b.elf, b.log_uart, b.log_tx, b.dev_id
+                ),
+            );
+        });
         card(ui, &p, "Проект прошивки", |ui| {
             egui::Grid::new("set_proj").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 ui.label("Папка проекта");
@@ -36,7 +58,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui.add(egui::TextEdit::singleline(&mut d.toolchain_dir).hint_text("пусто = PATH; Windows: …\\STM32CubeIDE\\plugins\\…gnu-tools…\\tools\\bin").desired_width(520.0));
                 ui.end_row();
             });
-            hint(ui, &p, "Команда выполняется в папке проекта. Здесь прошивка собирается корневым Makefile: «make -j8» → build/primGPT.elf. Каталога Debug в репозитории нет. Если папка toolchain пустая, на Windows студия сама находит make и arm-none-eabi-gcc из STM32CubeIDE.");
+            hint(ui, &p, &format!("Команда выполняется в папке проекта. Здесь прошивка собирается корневым Makefile: «make -j8» → build/{}. Каталога Debug в репозитории нет. Если папка toolchain пустая, на Windows студия сама находит make и arm-none-eabi-gcc из STM32CubeIDE.", boards::cur().elf));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut st.elf).hint_text("путь к .elf вручную").desired_width(420.0));
                 if ui.button("Загрузить ELF").clicked() && !st.elf.trim().is_empty() {
@@ -88,7 +110,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui,
                 &p,
                 "Один OpenOCD на двоих: студия говорит с ним по TCL (6667), Cursor — по GDB (этот порт). \
-                 Сначала подключите SWD в студии, потом в Cursor — конфигурация «Attach to F103 Studio (OpenOCD :3333)». \
+                 Сначала подключите SWD в студии, потом в Cursor — конфигурация «Attach to Pill Studio (OpenOCD :3333)». \
                  Если в Cursor ядро запущено (Continue), «Пауза» в студии сразу останавливает и Cursor. \
                  Шаги и остановы в Cursor студия замечает за 0.3 с. Шаги и «Пуск» из студии Cursor не знает — \
                  он только переходит на строку; нажмите в Cursor паузу или шаг, чтобы обновить его стек. \

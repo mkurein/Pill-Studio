@@ -68,7 +68,8 @@ heap_free, heap_min` (u32) · `stack_free default/led/uart` (u16, байты) ·
 
 ## UART3 log (115200, TX only)
 
-`BOOT fw=<ver> rst=0x<CSR> boot=<n>` → `[PREV_FAULT ...]` → `FRAM probe=OK|FAIL` →
+`BOOT fw=<ver> rst=0x<CSR> boot=<n>` → `[PREV_FAULT ...]` →
+`FRAM probe=OK|FAIL sr=<WEL set>/<WEL clear> mem=FRAM|W25Q64|NOR jedec=<id>` →
 `Default Task running...` → `Uart1Task started` → `Tick:<ms>` каждую 1 s,
 `DIAG heap_free=.. heap_min=.. stk_free D=.. L=.. U=.. rx=.. crc_err=.. uart_err=..` каждые 5 s,
 `TEST fram sub=<n> result=OK|FAIL` на cmd 0x02.

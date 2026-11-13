@@ -1,10 +1,10 @@
-//! Blue Pill drawing: headers as on the silkscreen, project usage, live GPIO
+//! Board drawing (Blue Pill or Black Pill): headers as on the silkscreen, project usage, live GPIO
 //! state over SWD, pin details with alternate functions.
 
 use crate::app::{Act, Shared};
 use crate::canvas::Canvas;
 use crate::core::mcu::{self, PinKind};
-use crate::core::svd;
+use crate::core::boards::{self, BoardId};
 use crate::theme::{mix, Pal};
 use crate::widgets::*;
 use eframe::egui::{self, Align2, Color32, RichText, Stroke};
@@ -28,16 +28,9 @@ pub struct St {
     last_read: f64,
 }
 
-const GPIO_BASES: [(&str, u32); 3] = [("A", 0x4001_0800), ("B", 0x4001_0C00), ("C", 0x4001_1000)];
-
-/// (CRx value, IDR, ODR) of the port of `pin` from the SWD cache.
-fn live(sh: &Shared, pin: &str) -> Option<(u32, u32, u32, u32)> {
-    let port = pin.get(1..2)?;
-    let n: u32 = pin.get(2..)?.parse().ok()?;
-    let base = GPIO_BASES.iter().find(|(p, _)| *p == port)?.1;
-    let cr = sh.mem(base + if n < 8 { 0 } else { 4 })?;
-    let nib = (cr >> ((n % 8) * 4)) & 0xF;
-    Some((nib & 3, nib >> 2, (sh.mem(base + 8)? >> n) & 1, (sh.mem(base + 12)? >> n) & 1))
+/// Live mode and level of `pin` from the SWD cache.
+fn live(sh: &Shared, pin: &str) -> Option<mcu::PinLive> {
+    mcu::gpio_live(|a| sh.mem(a), pin)
 }
 
 fn matches(f: Filter, pin: &mcu::Pin) -> bool {
@@ -82,16 +75,16 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let now = ui.ctx().input(|i| i.time);
     if sh.swd_ok() && now - st.last_read > 1.0 {
         st.last_read = now;
-        let addrs = GPIO_BASES.iter().flat_map(|(_, b)| [*b, b + 4, b + 8, b + 12]).collect();
-        sh.job(crate::worker::Job::ReadWords(addrs));
+        sh.job(crate::worker::Job::ReadWords(mcu::gpio_poll_addrs()));
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(1000));
     }
 
+    let b = boards::cur();
     egui::ScrollArea::vertical().show(ui, |ui| {
         h1(
             ui,
             &p,
-            "Плата Blue Pill",
+            &format!("Плата {} · {}", b.board, b.chip),
             "Выводы подписаны как на шелкографии. Наведите — краткая справка, нажмите — подробности. \
              При подключённом SWD цвет точки показывает живой уровень вывода.",
         );
@@ -116,14 +109,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             details(&mut cols[0], sh, st);
             card(&mut cols[1], &p, "Что подключено в этом проекте", |ui| {
                 egui::Grid::new("wiring").num_columns(3).spacing([12.0, 5.0]).striped(true).show(ui, |ui| {
-                    for (who, pins, what) in [
-                        ("USB-UART №1", "A9 → RX, A10 ← TX, GND", "протокол команд, 38400"),
-                        ("USB-UART №2", "B10 → RX, GND", "текстовый лог, 115200"),
-                        ("ST-Link V2", "SWD: DIO, CLK, GND, 3.3", "прошивка и отладка"),
-                        ("FRAM 32 КБ (SPI)", "A4 CS, A5 SCK, A6 MISO, A7 MOSI", "энергонезависимая память"),
-                        ("Светодиод платы", "C13 (0 = горит)", "индикация, команда 0x70"),
-                        ("Контрольная точка", "C15", "меняется на каждый кадр"),
-                    ] {
+                    for &(who, pins, what) in b.wiring {
                         ui.label(RichText::new(who).color(p.fg));
                         ui.label(RichText::new(pins).monospace().color(p.accent));
                         ui.label(RichText::new(what).color(p.fg2));
@@ -131,12 +117,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     }
                 });
                 ui.add_space(6.0);
-                hint(
-                    ui,
-                    &p,
-                    "Безопасность: логика 3.3 В. На выводы без отметки FT (A0–A7, B0, B1, B5, C13–C15) нельзя подавать 5 В. \
-                     Если ST-Link питает плату, не подключайте одновременно 5 В от USB-UART к выводу 3.3.",
-                );
+                hint(ui, &p, b.safety);
             });
         });
     });
@@ -144,44 +125,62 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
 
 fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
+    let b = boards::cur();
+    let black = b.id == BoardId::BlackPill;
     let (cv, _) = Canvas::new(ui, [0.0, 0.0, 1000.0, 372.0], 434.0);
-    // PCB
-    let pcb = if p.dark { Color32::from_rgb(0x12, 0x2a, 0x5c) } else { Color32::from_rgb(0x1d, 0x4e, 0xa8) };
+    // PCB: blue for the Blue Pill, near-black for the WeAct Black Pill
+    let pcb = match (black, p.dark) {
+        (false, true) => Color32::from_rgb(0x12, 0x2a, 0x5c),
+        (false, false) => Color32::from_rgb(0x1d, 0x4e, 0xa8),
+        (true, true) => Color32::from_rgb(0x16, 0x18, 0x1c),
+        (true, false) => Color32::from_rgb(0x26, 0x29, 0x30),
+    };
     cv.rect(24.0, 26.0, 916.0, 308.0, 14.0, pcb, Stroke::new(1.5, mix(pcb, 60.0, Color32::BLACK)));
     let silk = Color32::from_rgb(0xee, 0xf2, 0xff);
     // USB connector
     cv.rect(12.0, 140.0, 70.0, 80.0, 6.0, Color32::from_rgb(0xb8, 0xbe, 0xc8), Stroke::new(1.0, Color32::from_rgb(0x70, 0x76, 0x80)));
-    cv.text(56.0, 228.0, Align2::CENTER_TOP, "micro-USB", 11.0, silk);
+    cv.text(56.0, 228.0, Align2::CENTER_TOP, if black { "USB-C" } else { "micro-USB" }, 11.0, silk);
     cv.text(56.0, 243.0, Align2::CENTER_TOP, "(A11/A12)", 10.0, mix(silk, 70.0, pcb));
-    // crystal 8 MHz
+    // HSE crystal
     cv.rect(150.0, 150.0, 60.0, 26.0, 10.0, Color32::from_rgb(0xc9, 0xcd, 0xd4), Stroke::new(1.0, Color32::GRAY));
-    cv.text(180.0, 180.0, Align2::CENTER_TOP, "8 МГц", 10.0, silk);
-    // reset button
-    cv.rect(240.0, 200.0, 44.0, 44.0, 4.0, Color32::from_rgb(0xdd, 0xdd, 0xdd), Stroke::new(1.0, Color32::GRAY));
-    cv.circle(262.0, 222.0, 12.0, Color32::from_rgb(0x30, 0x30, 0x30), Stroke::NONE);
-    cv.text(262.0, 248.0, Align2::CENTER_TOP, "RESET", 10.0, silk);
+    cv.text(180.0, 180.0, Align2::CENTER_TOP, b.crystal, 10.0, silk);
+    // buttons: Blue Pill has RESET only; Black Pill has BOOT0, NRST and KEY (PA0)
+    let buttons: &[(&str, f32, f32)] = if black { &[("BOOT0", 240.0, 110.0), ("NRST", 240.0, 200.0), ("KEY · A0", 640.0, 200.0)] } else { &[("RESET", 240.0, 200.0)] };
+    for &(name, bx, by) in buttons {
+        cv.rect(bx, by, 44.0, 44.0, 4.0, Color32::from_rgb(0xdd, 0xdd, 0xdd), Stroke::new(1.0, Color32::GRAY));
+        cv.circle(bx + 22.0, by + 22.0, 12.0, Color32::from_rgb(0x30, 0x30, 0x30), Stroke::NONE);
+        cv.text(bx + 22.0, by + 48.0, Align2::CENTER_TOP, name, 10.0, silk);
+    }
+    if black {
+        // on-board SPI NOR flash (WeAct footprint U3) on PA4..PA7
+        cv.rect(330.0, 238.0, 56.0, 34.0, 3.0, Color32::from_rgb(0x1b, 0x1d, 0x22), Stroke::new(1.0, Color32::from_rgb(0x55, 0x58, 0x60)));
+        cv.text(358.0, 255.0, Align2::CENTER_CENTER, "W25Q64", 9.0, silk);
+        cv.hit(ui, "spi-flash", 330.0, 238.0, 56.0, 34.0).on_hover_text("SPI NOR-флеш 8 МБ на SPI1 (A4 CS, A5–A7). Прошивка узнаёт её по JEDEC EF 40 17.");
+    }
     // MCU (rotated 45° on the real board)
     let (mx, my, r) = (470.0, 180.0, 82.0);
     let diamond: Vec<egui::Pos2> = [(mx, my - r), (mx + r, my), (mx, my + r), (mx - r, my)].iter().map(|(x, y)| cv.p(*x, *y)).collect();
     cv.painter.add(egui::Shape::convex_polygon(diamond, Color32::from_rgb(0x1b, 0x1d, 0x22), Stroke::new(1.0, Color32::from_rgb(0x55, 0x58, 0x60))));
     cv.text_bold(mx, my - 14.0, Align2::CENTER_CENTER, "STM32", 15.0, silk);
-    cv.text(mx, my + 6.0, Align2::CENTER_CENTER, "F103C8T6", 12.0, silk);
-    cv.text(mx, my + 22.0, Align2::CENTER_CENTER, "LQFP48", 10.0, mix(silk, 60.0, Color32::BLACK));
+    cv.text(mx, my + 6.0, Align2::CENTER_CENTER, b.chip_short, 12.0, silk);
+    cv.text(mx, my + 22.0, Align2::CENTER_CENTER, b.package, 10.0, mix(silk, 60.0, Color32::BLACK));
     let mcu_hit = cv.hit(ui, "mcu", mx - 60.0, my - 60.0, 120.0, 120.0).on_hover_text("Контроллер — схема блоков на экране «Контроллер»");
     if mcu_hit.clicked() {
         sh.act(Act::Go(crate::app::View::Mcu));
     }
-    // BOOT jumpers
-    for (i, (name, val)) in [("BOOT0", "0"), ("BOOT1", "0")].iter().enumerate() {
+    // BOOT jumpers (Blue Pill only; the Black Pill has a BOOT0 button)
+    let jumpers: &[(&str, &str)] = if black { &[] } else { &[("BOOT0", "0"), ("BOOT1", "0")] };
+    for (i, (name, val)) in jumpers.iter().enumerate() {
         let x = 640.0 + i as f32 * 60.0;
         cv.rect(x, 150.0, 44.0, 22.0, 3.0, Color32::from_rgb(0x20, 0x20, 0x20), Stroke::NONE);
         cv.rect(x + 2.0, 152.0, 20.0, 18.0, 2.0, Color32::from_rgb(0xe8, 0xc5, 0x3a), Stroke::NONE);
         cv.text(x + 22.0, 178.0, Align2::CENTER_TOP, format!("{} = {}", name, val), 10.0, silk);
     }
-    // On a Blue Pill both lamps sit at the SWD end, opposite the USB jack.
+    // Both lamps sit at the SWD end, opposite the USB jack (Black Pill: blue LED).
     lamp(&cv, 800.0, 150.0, true, Color32::from_rgb(0xef, 0x44, 0x44), "PWR", "питание");
     let (pc13_on, pc13_state) = pc13_lamp(ui, sh);
-    lamp(&cv, 800.0, 228.0, pc13_on, Color32::from_rgb(0x3d, 0xd6, 0x6a), "LED", pc13_state);
+    let led_c = if black { Color32::from_rgb(0x3b, 0x82, 0xf6) } else { Color32::from_rgb(0x3d, 0xd6, 0x6a) };
+    lamp(&cv, 800.0, 228.0, pc13_on, led_c, "LED", pc13_state);
     cv.hit(ui, "led-pc13", 782.0, 210.0, 36.0, 56.0).on_hover_text(
         "Светодиод платы на PC13, активный 0. LedTask мигает раз в секунду; команда 0x70 включает, гасит или возвращает мигание.",
     );
@@ -197,8 +196,8 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         let lvl = name.and_then(|n| live(sh, n));
         cv.rect(x - 13.0, y - 13.0, 26.0, 26.0, 3.0, mix(Color32::BLACK, 70.0, pcb), Stroke::NONE);
         let fill = match lvl {
-            Some((mode, _, idr, odr)) => {
-                let bit = if mode == 0 { idr } else { odr };
+            Some(l) => {
+                let bit = if l.output { l.odr } else { l.idr };
                 if bit == 1 {
                     c
                 } else {
@@ -228,13 +227,13 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             clicked = Some(label.to_string());
         }
     };
-    for (i, s) in mcu::HEADER_TOP.iter().enumerate() {
+    for (i, s) in b.header_top.iter().enumerate() {
         draw_pin(s, x0 + i as f32 * step, 64.0, -16.0, i % 2 == 1);
     }
-    for (i, s) in mcu::HEADER_BOTTOM.iter().enumerate() {
+    for (i, s) in b.header_bottom.iter().enumerate() {
         draw_pin(s, x0 + i as f32 * step, 296.0, 16.0, i % 2 == 1);
     }
-    for (i, s) in mcu::HEADER_SWD.iter().enumerate() {
+    for (i, s) in b.header_swd.iter().enumerate() {
         draw_pin(s, 905.0, 128.0 + i as f32 * 36.0, 0.0, false);
     }
     cv.text(905.0, 100.0, Align2::CENTER_BOTTOM, "SWD", 11.0, silk);
@@ -248,8 +247,8 @@ fn draw_board(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
 /// picture blinks on that rhythm so the lamp is visible between STATUS polls.
 fn pc13_lamp(ui: &egui::Ui, sh: &Shared) -> (bool, &'static str) {
     if sh.swd_ok() {
-        if let Some((_, _, _, odr)) = live(sh, "PC13") {
-            let on = odr == 0;
+        if let Some(l) = live(sh, "PC13") {
+            let on = l.odr == 0;
             return (on, if on { "горит" } else { "погашен" });
         }
     }
@@ -282,7 +281,7 @@ fn pin_summary(ui: &mut egui::Ui, p: &Pal, silk: &str) {
         return;
     }
     let Some(pin) = mcu::silk_to_pin(silk).and_then(mcu::pin) else { return };
-    ui.label(RichText::new(format!("{}  (вывод {} LQFP48){}", pin.name, pin.lqfp, if pin.ft { "  · FT 5 В" } else { "" })).strong());
+    ui.label(RichText::new(format!("{}  (вывод {} {}){}", pin.name, pin.lqfp, boards::cur().package, if pin.ft { "  · FT 5 В" } else { "" })).strong());
     if !pin.af.is_empty() {
         ui.label(format!("функции: {}", pin.af));
     }
@@ -300,7 +299,7 @@ fn details(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             return;
         };
         egui::Grid::new("pin_det").num_columns(2).spacing([14.0, 4.0]).show(ui, |ui| {
-            kv(ui, &p, "Номер в корпусе LQFP48", pin.lqfp.to_string());
+            kv(ui, &p, &format!("Номер в корпусе {}", boards::cur().package), pin.lqfp.to_string());
             kv(
                 ui,
                 &p,
@@ -323,10 +322,9 @@ fn details(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             if let Some(u) = mcu::usage(pin.name) {
                 kv(ui, &p, "В этом проекте", format!("{} — {}", u.0, u.2));
             }
-            if let Some((mode, cnf, idr, odr)) = live(sh, pin.name) {
-                let speed = svd::gpio_speed_ru(mode);
-                kv(ui, &p, "Режим (по SWD)", format!("{} {}", svd::gpio_mode_ru(mode, cnf), speed));
-                kv(ui, &p, "Уровень IDR / ODR", format!("{} / {}", idr, odr));
+            if let Some(l) = live(sh, pin.name) {
+                kv(ui, &p, "Режим (по SWD)", l.mode);
+                kv(ui, &p, "Уровень IDR / ODR", format!("{} / {}", l.idr, l.odr));
             }
         });
         if !pin.note.is_empty() {

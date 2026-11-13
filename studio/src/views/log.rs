@@ -23,7 +23,8 @@ impl Default for St {
 
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
-    h1(ui, &p, "Лог UART3 (PB10, 115200)", "BOOT — старт, Tick — раз в секунду, DIAG — каждые 5 с, TEST — результат команды, FAULT — авария.");
+    let b = crate::core::boards::cur();
+    h1(ui, &p, &format!("Лог {} ({}, 115200)", b.log_uart.replace("USART", "UART"), b.log_tx), "BOOT — старт, Tick — раз в секунду, DIAG — каждые 5 с, TEST — результат команды, FAULT — авария.");
     if sh.st.log.is_none() {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Лог не подключён.").color(p.warn));

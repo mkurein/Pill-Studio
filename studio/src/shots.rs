@@ -1,4 +1,4 @@
-//! Screenshot tour for visual checks: `APP_SHOTS=<dir> f103-studio`
+//! Screenshot tour for visual checks: `APP_SHOTS=<dir> pill-studio`
 //! walks every view (dark theme, then light),
 //! saves `NN_name.bmp` into `<dir>` and closes the window. No extra crates:
 //! the frames are written as plain 24-bit BMP.

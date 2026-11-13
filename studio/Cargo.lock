@@ -731,22 +731,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
-name = "f103-studio"
-version = "0.1.12"
-dependencies = [
- "dirs",
- "eframe",
- "egui_extras",
- "egui_plot",
- "embed-resource",
- "object",
- "roxmltree",
- "serde",
- "serde_json",
- "serialport",
-]
-
-[[package]]
 name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1883,6 +1867,22 @@ checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
  "siphasher",
  "unicase",
+]
+
+[[package]]
+name = "pill-studio"
+version = "0.2.0"
+dependencies = [
+ "dirs",
+ "eframe",
+ "egui_extras",
+ "egui_plot",
+ "embed-resource",
+ "object",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "serialport",
 ]
 
 [[package]]

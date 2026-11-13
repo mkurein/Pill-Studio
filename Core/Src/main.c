@@ -362,7 +362,8 @@ int main(void)
   {
     uint8_t sr[2];
     int ok = fram_probe(&fram, sr);
-    log_printf("FRAM probe=%s sr=%02X/%02X\r\n", ok == 0 ? "OK" : "FAIL", sr[0], sr[1]);
+    log_printf("FRAM probe=%s sr=%02X/%02X mem=%s jedec=%06lX\r\n", ok == 0 ? "OK" : "FAIL",
+               sr[0], sr[1], fram_kind(&fram), fram.jedec);
   }
   //log_printf("FRAM setup done\r\n");
 

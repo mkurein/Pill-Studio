@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Сборка F103 Studio для macOS: .app + .dmg (без сторонних сборщиков).
+"""Сборка Pill Studio для macOS: .app + .dmg (без сторонних сборщиков).
 
     python3 build_macos.py                # архитектура этого Mac
     python3 build_macos.py --universal    # arm64 + x86_64 (lipo)
     python3 build_macos.py --open
 
 Результат в studio/release/vX.Y.Z/:
-    F103-Studio-vX.Y.Z-macos-<arch>.dmg
-    F103-Studio-vX.Y.Z-macos-<arch>.app.zip
+    Pill-Studio-vX.Y.Z-macos-<arch>.dmg
+    Pill-Studio-vX.Y.Z-macos-<arch>.app.zip
     checksum.txt
 Иконка .icns собирается из assets/icon.svg (rsvg-convert + iconutil).
 """
@@ -26,11 +26,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 # ── настройки проекта ────────────────────────────────────────────────────────
-PRODUCT = "F103 Studio"                        # имя .app и тома .dmg
-SLUG = "F103-Studio"                           # префикс файлов в release/
-CRATE = "f103-studio"                          # пакет cargo
-BIN = "f103-studio"                            # имя бинарника
-BUNDLE_ID = "com.f103studio.desktop"
+PRODUCT = "Pill Studio"                        # имя .app и тома .dmg
+SLUG = "Pill-Studio"                           # префикс файлов в release/
+CRATE = "pill-studio"                          # пакет cargo
+BIN = "pill-studio"                            # имя бинарника
+BUNDLE_ID = "com.pillstudio.desktop"
 ICNS = ROOT / "target" / "icon.icns"           # собирается make_icns()
 SVG = ROOT / "assets" / "icon.svg"
 MIN_MACOS = "11.0"

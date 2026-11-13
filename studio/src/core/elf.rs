@@ -193,7 +193,8 @@ fn tool_bin(tool_dir: &str, which: &str) -> PathBuf {
 
 /// Default ELF locations relative to the project root.
 pub fn candidates(project: &Path) -> Vec<PathBuf> {
-    vec![project.join("build/primGPT.elf"), project.join("Debug/primGPT.elf")]
+    let name = super::boards::cur().elf;
+    vec![project.join("build").join(name), project.join("Debug").join(name)]
 }
 
 #[cfg(test)]

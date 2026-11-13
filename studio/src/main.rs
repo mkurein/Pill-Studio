@@ -1,4 +1,5 @@
-//! F103 Studio — native desktop studio (egui) for the STM32F103C8T Blue Pill
+//! Pill Studio — native desktop studio (egui) for the Blue Pill (STM32F103C8T)
+//! and the Black Pill (STM32F411CEU6)
 //! firmware in this repository: MCU reference, board, register browser with
 //! live SWD reads, UART protocol console, FreeRTOS monitor, fault analysis.
 
@@ -24,10 +25,10 @@ fn main() -> eframe::Result {
     }
     let options = eframe::NativeOptions {
         viewport: viewport
-            .with_title("F103 Studio")
+            .with_title("Pill Studio")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1100.0, 680.0]),
         ..Default::default()
     };
-    eframe::run_native("F103 Studio", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    eframe::run_native("Pill Studio", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
 }

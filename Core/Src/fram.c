@@ -1,4 +1,7 @@
 #include "fram.h"
+#include <string.h>
+#include "FreeRTOS.h"
+#include "task.h"
 
 extern SPI_HandleTypeDef hspi1;
 
@@ -19,7 +22,46 @@ int fram_init(fram_t *fram, fram_cfg_t *cfg) {
     fram->cs_port = cfg->cs_port;
     fram->cs_pin = cfg->cs;
     HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
+
+    uint8_t cmd = FRAM_RDID, id[3] = {0};
+    HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(fram->hspi, &cmd, 1, HAL_MAX_DELAY);
+    HAL_SPI_Receive(fram->hspi, id, 3, HAL_MAX_DELAY);
+    HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
+    fram->jedec = ((uint32_t)id[0] << 16) | ((uint32_t)id[1] << 8) | id[2];
+    /* NOR: real manufacturer code (not 00/FF, not the 7F continuation used by
+     * Cypress FRAM, not Fujitsu 04) and a capacity code of 128 KB..32 MB */
+    fram->is_nor = SPI_NOR_SUPPORT && id[0] != 0x00 && id[0] != 0xFF && id[0] != 0x7F &&
+                   id[0] != 0x04 && id[2] >= 0x11 && id[2] <= 0x19;
     return 0;
+}
+
+const char *fram_kind(const fram_t *fram)
+{
+    if (!fram->is_nor) return "FRAM";
+    if ((fram->jedec >> 8) == 0xEF40) {
+        switch (fram->jedec & 0xFF) {
+        case 0x15: return "W25Q16";
+        case 0x16: return "W25Q32";
+        case 0x17: return "W25Q64";
+        case 0x18: return "W25Q128";
+        default: break;
+        }
+    }
+    return "NOR";
+}
+
+/* command + 16-bit (FRAM) or 24-bit (NOR) address, CS stays low */
+static void cmd_addr(fram_t *fram, uint8_t op, uint32_t address)
+{
+    uint8_t cmd[4];
+    uint16_t n = 0;
+    cmd[n++] = op;
+    if (fram->is_nor) cmd[n++] = (uint8_t)(address >> 16);
+    cmd[n++] = (uint8_t)(address >> 8);
+    cmd[n++] = (uint8_t)address;
+    HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(fram->hspi, cmd, n, HAL_MAX_DELAY);
 }
 
 void fram_write_enable(fram_t *fram) {
@@ -56,18 +98,60 @@ void fram_write_status(fram_t *fram, uint8_t value) {
 }
 
 void fram_read(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count) {
-    uint8_t cmd[3] = { FRAM_READ, (uint8_t)(address >> 8), (uint8_t)(address & 0xFF) };
-    HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(fram->hspi, cmd, 3, HAL_MAX_DELAY);
+    cmd_addr(fram, FRAM_READ, address);
     HAL_SPI_Receive(fram->hspi, buffer, count, HAL_MAX_DELAY);
     HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
 }
 
+#if SPI_NOR_SUPPORT
+/* SR bit 0 (BUSY) after erase/program; sector erase ~45 ms, max 400 ms */
+static void nor_wait(fram_t *fram, uint32_t timeout_ms)
+{
+    uint32_t t0 = HAL_GetTick();
+    while ((fram_read_status(fram) & 0x01) && HAL_GetTick() - t0 < timeout_ms) {
+        if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) vTaskDelay(1);
+    }
+}
+
+/* Read-modify-write of every 4 KB sector the range touches: contents outside
+ * [address, address+count) are preserved. */
+static void nor_write(fram_t *fram, uint32_t address, const uint8_t *buffer, uint16_t count)
+{
+    static uint8_t sec[NOR_SECTOR_SIZE];
+    while (count) {
+        uint32_t base = address & ~(NOR_SECTOR_SIZE - 1u);
+        uint32_t off = address - base;
+        uint32_t n = NOR_SECTOR_SIZE - off;
+        if (n > count) n = count;
+
+        cmd_addr(fram, FRAM_READ, base);
+        HAL_SPI_Receive(fram->hspi, sec, NOR_SECTOR_SIZE, HAL_MAX_DELAY);
+        HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
+        memcpy(&sec[off], buffer, n);
+
+        fram_write_enable(fram);
+        cmd_addr(fram, NOR_SECTOR_ERASE, base);
+        HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
+        nor_wait(fram, 500);
+
+        for (uint32_t p = 0; p < NOR_SECTOR_SIZE; p += NOR_PAGE_SIZE) {
+            fram_write_enable(fram);
+            cmd_addr(fram, FRAM_WRITE, base + p);
+            HAL_SPI_Transmit(fram->hspi, &sec[p], NOR_PAGE_SIZE, HAL_MAX_DELAY);
+            HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
+            nor_wait(fram, 10);
+        }
+        address += n; buffer += n; count = (uint16_t)(count - n);
+    }
+}
+#endif
+
 void fram_write(fram_t *fram, uint16_t address, uint8_t *buffer, uint16_t count) {
-    uint8_t cmd[3] = { FRAM_WRITE, (uint8_t)(address >> 8), (uint8_t)(address & 0xFF) };
+#if SPI_NOR_SUPPORT
+    if (fram->is_nor) { nor_write(fram, address, buffer, count); return; }
+#endif
     fram_write_enable(fram);
-    HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_RESET);
-    HAL_SPI_Transmit(fram->hspi, cmd, 3, HAL_MAX_DELAY);
+    cmd_addr(fram, FRAM_WRITE, address);
     HAL_SPI_Transmit(fram->hspi, buffer, count, HAL_MAX_DELAY);
     HAL_GPIO_WritePin(fram->cs_port, fram->cs_pin, GPIO_PIN_SET);
     fram_write_disable(fram);

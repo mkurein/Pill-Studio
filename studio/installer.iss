@@ -1,13 +1,13 @@
-﻿; F103 Studio — установщик Inno Setup 6. Собирает build_windows.ps1.
-; UTF-8 с BOM. Версия: ISCC /DAppVersion=0.1.12 /Orelease\v0.1.12 /Fимя
+﻿; Pill Studio — установщик Inno Setup 6. Собирает build_windows.ps1.
+; UTF-8 с BOM. Версия: ISCC /DAppVersion=0.2.0 /Orelease\v0.2.0 /Fимя
 
 #ifndef AppVersion
-  #define AppVersion "0.1.12"
+  #define AppVersion "0.2.0"
 #endif
 
-#define AppName "F103 Studio"
+#define AppName "Pill Studio"
 #define AppPublisher "primGPT"
-#define AppExe "F103 Studio.exe"
+#define AppExe "Pill Studio.exe"
 
 [Setup]
 AppId={{8F3C2A71-5E14-4B9D-9C60-2D7A1E84B6F3}
@@ -18,7 +18,7 @@ DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=release
-OutputBaseFilename=F103-Studio-setup
+OutputBaseFilename=Pill-Studio-setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -37,7 +37,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "target\win-bundle\F103 Studio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "target\win-bundle\Pill Studio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"

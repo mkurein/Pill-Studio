@@ -6,6 +6,7 @@ use crate::core::config::Config;
 use crate::core::debug::{self, AsmLine, StepKind};
 use crate::core::elf::{self, Elf};
 use crate::core::link::{LogPort, ProtoPort};
+use crate::core::boards;
 use crate::core::openocd::{OcdConfig, OpenOcd};
 use crate::core::proto::{self, *};
 use crate::core::sim::SimBoard;
@@ -64,6 +65,9 @@ pub enum Job {
     SimFram(bool),
     /// Drop every virtual-board link. Real UART and OpenOCD stay open.
     SimStop,
+    /// Another board was selected (`boards::cur()` is already switched): close
+    /// every link, take its SVD and project, reload the ELF.
+    Board(Arc<Vec<Peripheral>>, String),
 }
 
 #[derive(Clone, Debug)]
@@ -885,7 +889,7 @@ impl Eng {
                     Ok(p) => {
                         self.log = Some(LogSrc::Serial(p, sink));
                         self.st.log = Some(name.clone());
-                        self.toast(Tone::Ok, format!("Лог UART3: {}", name));
+                        self.toast(Tone::Ok, format!("Лог {}: {}", boards::cur().log_uart, name));
                     }
                     Err(e) => self.toast(Tone::Err, e),
                 }
@@ -937,10 +941,17 @@ impl Eng {
             }
             Job::SwdOpen(cfg) => {
                 self.swd = None;
+                let cfg = cfg.with_target(boards::cur().ocd_target);
                 match OpenOcd::start(&cfg) {
                     Ok(mut o) => {
                         self.st.swd_voltage = o.target_voltage();
                         self.st.idcode = o.read_words(0xE004_2000, 1).ok().map(|v| v[0]);
+                        if let Some(other) = self.st.idcode.and_then(boards::by_idcode).filter(|b| *b != boards::cur().id) {
+                            self.toast(
+                                Tone::Warn,
+                                format!("По SWD отвечает {} ({}), а выбрана {}. Переключите плату вверху слева.", other.profile().board, other.profile().chip, boards::cur().board),
+                            );
+                        }
                         self.st.ocd_console = o.log_tail(30);
                         self.swd = Some(Swd::Real(Box::new(o)));
                         self.st.swd = Some("ST-Link (OpenOCD)".into());
@@ -957,7 +968,7 @@ impl Eng {
                 self.swd = Some(Swd::Sim);
                 self.st.swd = Some("виртуальная плата".into());
                 self.st.swd_voltage = Some("3.30 В".into());
-                self.st.idcode = Some(0x2000_0410);
+                self.st.idcode = Some(boards::cur().idcode_sim);
                 self.st.swd_state = "running".into();
             }
             Job::SwdClose => {
@@ -1133,6 +1144,24 @@ impl Eng {
                 }
             }
             Job::LoadElf(p) => self.load_elf(&p, true),
+            Job::Board(svd, project) => {
+                self.proto = None;
+                self.log = None;
+                self.swd = None;
+                self.svd = svd;
+                self.sim = SimBoard::new();
+                self.project = PathBuf::from(project);
+                let keep = (self.st.poll_ms, self.st.sim_fram);
+                self.st = State { poll_ms: keep.0, sim_fram: keep.1, ..Default::default() };
+                self.last_halt_pc = None;
+                self.last_jump = None;
+                for p in elf::candidates(&self.project) {
+                    if p.exists() {
+                        self.load_elf(&p, false);
+                        break;
+                    }
+                }
+            }
             Job::Build(cfg) => {
                 let c = Self::shell(&cfg.build_cmd, &cfg.project_dir, &cfg.toolchain_dir);
                 self.toolchain = cfg.toolchain_dir.clone();

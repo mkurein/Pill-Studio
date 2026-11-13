@@ -1,7 +1,38 @@
-//! Static knowledge about STM32F103C8T6 and the Blue Pill board, in Russian.
-//! Sources: DS5319 (datasheet) Table 5 "pin definitions", Figure 1 block diagram,
-//! Figure 11 memory map; RM0008 (reference manual) §7 RCC, §9 GPIO/AFIO.
-//! Project usage comes from Core/Src/main.c and stm32f1xx_hal_msp.c.
+//! Static knowledge about the two boards, in Russian.
+//! STM32F103C8T6 / Blue Pill: DS5319 Table 5 "pin definitions", Figure 1 block
+//! diagram, Figure 11 memory map; RM0008 §7 RCC, §9 GPIO/AFIO.
+//! STM32F411CEU6 / Black Pill: see `mcu_f411.rs`.
+//! Project usage comes from Core/Src/main.c and *_hal_msp.c of each firmware.
+//! The functions at the top answer for the board selected in `boards::cur()`.
+
+use super::boards::{self, Family, Profile};
+pub use super::mcu_f411::{f411_block_svd, f411_usage, F411_BLOCKS, F411_CLOCKS, F411_MEMORY, F411_PINS};
+
+/// What this firmware does with a pin: (function, colour token, explanation).
+pub type Usage = (&'static str, &'static str, &'static str);
+
+pub fn pins() -> &'static [Pin] {
+    boards::cur().pins
+}
+pub fn pin(name: &str) -> Option<&'static Pin> {
+    pins().iter().find(|p| p.name == name)
+}
+pub fn usage(name: &str) -> Option<Usage> {
+    (boards::cur().usage)(name)
+}
+pub fn blocks() -> &'static [Block] {
+    boards::cur().blocks
+}
+pub fn memory() -> &'static [Region] {
+    boards::cur().memory
+}
+pub fn clocks() -> Clocks {
+    boards::cur().clocks
+}
+/// Silkscreen label → MCU pin name on the current board.
+pub fn silk_to_pin(s: &str) -> Option<&'static str> {
+    silk_to_pin_in(boards::cur(), s)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PinKind {
@@ -30,7 +61,7 @@ const fn io(lqfp: u8, name: &'static str, ft: bool, af: &'static str, remap: &'s
     Pin { lqfp, name, kind: PinKind::Io, ft, af, remap, note: "" }
 }
 
-pub static PINS: &[Pin] = &[
+pub static F103_PINS: &[Pin] = &[
     Pin { lqfp: 1, name: "VBAT", kind: PinKind::Power, ft: false, af: "", remap: "", note: "питание RTC и backup-регистров (на Blue Pill соединён с 3.3 В)" },
     Pin { lqfp: 2, name: "PC13", kind: PinKind::Io, ft: false, af: "TAMPER-RTC", remap: "", note: "слаботочный вывод (≤ 3 мА, ≤ 2 МГц); светодиод Blue Pill, активный уровень 0" },
     Pin { lqfp: 3, name: "PC14", kind: PinKind::Io, ft: false, af: "OSC32_IN", remap: "", note: "слаботочный; кварц 32.768 кГц" },
@@ -81,12 +112,7 @@ pub static PINS: &[Pin] = &[
     Pin { lqfp: 48, name: "VDD_3", kind: PinKind::Power, ft: false, af: "", remap: "", note: "3.3 В" },
 ];
 
-pub fn pin(name: &str) -> Option<&'static Pin> {
-    PINS.iter().find(|p| p.name == name)
-}
-
-/// What this firmware does with a pin: (function, colour token, explanation).
-pub fn usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
+pub fn f103_usage(name: &str) -> Option<Usage> {
     Some(match name {
         "PA9" => ("USART1_TX", "clk", "протокол → RX адаптера USB-UART №1, 38400 8N1"),
         "PA10" => ("USART1_RX", "clk", "протокол ← TX адаптера USB-UART №1; прерывание USART1 (prio 5)"),
@@ -105,21 +131,7 @@ pub fn usage(name: &str) -> Option<(&'static str, &'static str, &'static str)> {
     })
 }
 
-/// Blue Pill headers, USB connector on the left, as printed on the silkscreen.
-/// Top row (left → right) and bottom row (left → right).
-pub const HEADER_TOP: [&str; 20] = [
-    "GND", "GND", "3.3", "R", "B11", "B10", "B1", "B0", "A7", "A6", "A5", "A4", "A3", "A2", "A1", "A0", "C15", "C14",
-    "C13", "VB",
-];
-pub const HEADER_BOTTOM: [&str; 20] = [
-    "B12", "B13", "B14", "B15", "A8", "A9", "A10", "A11", "A12", "A15", "B3", "B4", "B5", "B6", "B7", "B8", "B9",
-    "5V", "GND", "3.3",
-];
-/// 4-pin SWD header at the right edge (top → bottom).
-pub const HEADER_SWD: [&str; 4] = ["3.3", "DIO", "CLK", "GND"];
-
-/// Silkscreen label → MCU pin name.
-pub fn silk_to_pin(s: &str) -> Option<&'static str> {
+pub fn silk_to_pin_in(b: &Profile, s: &str) -> Option<&'static str> {
     Some(match s {
         "R" => "NRST",
         "VB" => "VBAT",
@@ -128,7 +140,7 @@ pub fn silk_to_pin(s: &str) -> Option<&'static str> {
         "GND" | "3.3" | "5V" => return None,
         _ => {
             let full = format!("P{}", s);
-            return PINS.iter().find(|p| p.name == full).map(|p| p.name);
+            return b.pins.iter().find(|p| p.name == full).map(|p| p.name);
         }
     })
 }
@@ -150,7 +162,7 @@ pub struct Block {
 }
 
 /// Peripherals of STM32F103C8 (DS5319 Figure 1) with short Russian descriptions.
-pub static BLOCKS: &[Block] = &[
+pub static F103_BLOCKS: &[Block] = &[
     Block { id: "CORE", title: "Cortex-M3", bus: "core", text: "32-бит ядро ARMv7-M, 72 МГц, 1.25 DMIPS/МГц, Thumb-2, аппаратное деление, 3-ступенчатый конвейер. NVIC (43 прерывания, 16 уровней приоритета, 4 бита), SysTick (у нас — тик FreeRTOS 1 кГц), MPU нет." },
     Block { id: "FLASH", title: "Flash 64 КБ", bus: "ahb", text: "Программа и константы, адрес 0x0800 0000, страницы по 1 КБ. На 72 МГц нужно 2 такта ожидания (FLASH_LATENCY_2) и буфер предвыборки." },
     Block { id: "SRAM", title: "SRAM 20 КБ", bus: "ahb", text: "0x2000 0000. В проекте: .data+.bss ≈ 16 КБ, из них куча FreeRTOS 10 КБ (стеки задач, очередь, мьютекс), стек main/прерываний 1 КБ." },
@@ -182,7 +194,7 @@ pub struct Region {
 }
 
 /// DS5319 Figure 11 memory map (parts that exist in C8).
-pub static MEMORY: &[Region] = &[
+pub static F103_MEMORY: &[Region] = &[
     Region { start: 0x0000_0000, end: 0x0000_FFFF, name: "Алиас загрузки", text: "Отражение Flash или системной памяти — зависит от BOOT0/BOOT1. Отсюда ядро берёт SP и вектор сброса." },
     Region { start: 0x0800_0000, end: 0x0800_FFFF, name: "Flash 64 КБ", text: "Код программы, таблица векторов, константы, начальные значения .data." },
     Region { start: 0x1FFF_F000, end: 0x1FFF_F7FF, name: "System memory 2 КБ", text: "Загрузчик ST в ПЗУ (прошивка по USART1 при BOOT0 = 1)." },
@@ -195,22 +207,78 @@ pub static MEMORY: &[Region] = &[
     Region { start: 0xE000_0000, end: 0xE00F_FFFF, name: "Cortex-M3 PPB", text: "NVIC, SysTick, SCB (CFSR/HFSR — причины сбоя), DWT, ITM, отладка." },
 ];
 
-/// Clock settings of this project (SystemClock_Config in main.c).
+pub fn f103_block_svd(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "CORE" => "SCB",
+        "FLASH" => "FLASH",
+        "DMA1" => "DMA1",
+        "RCC" => "RCC",
+        "CRC" => "CRC",
+        "GPIO" => "GPIOA",
+        "AFIO" => "AFIO",
+        "EXTI" => "EXTI",
+        "ADC" => "ADC1",
+        "TIM1" => "TIM1",
+        "SPI1" => "SPI1",
+        "USART1" => "USART1",
+        "TIM234" => "TIM2",
+        "USART23" => "USART3",
+        "SPI2" => "SPI2",
+        "I2C" => "I2C1",
+        "USB" => "USB",
+        "CAN" => "CAN",
+        "WDG" => "IWDG",
+        "RTC" => "RTC",
+        _ => return None,
+    })
+}
+
+/// Clock settings of a project (SystemClock_Config in main.c).
+/// VCO = HSE / M × N, SYSCLK = VCO / P, USB = VCO / Q.
+/// F1 has no M/P dividers in this sense: M = 1, N = PLLMUL, P = 1, Q = USB prescaler 1.5.
+#[derive(Clone, Copy, Debug)]
 pub struct Clocks {
+    pub family: Family,
     pub hse: f64,
-    pub pll_mul: f64,
+    pub pll_m: f64,
+    pub pll_n: f64,
+    pub pll_p: f64,
+    pub pll_q: f64,
     pub ahb_div: f64,
     pub apb1_div: f64,
     pub apb2_div: f64,
     pub adc_div: f64,
+    pub flash_latency: u32,
 }
 
-pub const PROJECT_CLOCKS: Clocks =
-    Clocks { hse: 8e6, pll_mul: 9.0, ahb_div: 1.0, apb1_div: 2.0, apb2_div: 1.0, adc_div: 6.0 };
+pub const F103_CLOCKS: Clocks = Clocks {
+    family: Family::F1,
+    hse: 8e6,
+    pll_m: 1.0,
+    pll_n: 9.0,
+    pll_p: 1.0,
+    pll_q: 1.5,
+    ahb_div: 1.0,
+    apb1_div: 2.0,
+    apb2_div: 1.0,
+    adc_div: 6.0,
+    flash_latency: 2,
+};
+
+/// (SYSCLK, APB1, APB2, ADC) limits of the family.
+fn limits(f: Family) -> (f64, f64, f64, f64) {
+    match f {
+        Family::F1 => (72e6, 36e6, 72e6, 14e6),
+        Family::F4 => (100e6, 50e6, 100e6, 36e6),
+    }
+}
 
 impl Clocks {
+    pub fn vco(&self) -> f64 {
+        self.hse / self.pll_m * self.pll_n
+    }
     pub fn sysclk(&self) -> f64 {
-        self.hse * self.pll_mul
+        self.vco() / self.pll_p
     }
     pub fn hclk(&self) -> f64 {
         self.sysclk() / self.ahb_div
@@ -221,7 +289,7 @@ impl Clocks {
     pub fn pclk2(&self) -> f64 {
         self.hclk() / self.apb2_div
     }
-    /// Timers on APB with prescaler ≠ 1 run at 2× PCLK (RM0008 §7.2).
+    /// Timers on APB with prescaler ≠ 1 run at 2× PCLK (RM0008 §7.2, RM0383 §6.2).
     pub fn tim_apb1(&self) -> f64 {
         if self.apb1_div > 1.0 {
             self.pclk1() * 2.0
@@ -233,24 +301,40 @@ impl Clocks {
         self.pclk2() / self.adc_div
     }
     pub fn usb(&self) -> f64 {
-        self.sysclk() / 1.5
+        self.vco() / self.pll_q
     }
     /// Datasheet limits violated by this configuration (Russian).
     pub fn issues(&self) -> Vec<String> {
+        let (sys, apb1, apb2, adc) = limits(self.family);
         let mut v = vec![];
-        if self.sysclk() > 72e6 {
-            v.push("SYSCLK выше 72 МГц".into());
+        if self.sysclk() > sys {
+            v.push(format!("SYSCLK выше {} МГц", sys / 1e6));
         }
-        if self.pclk1() > 36e6 {
-            v.push("APB1 выше 36 МГц".into());
+        if self.pclk1() > apb1 {
+            v.push(format!("APB1 выше {} МГц", apb1 / 1e6));
         }
-        if self.adc() > 14e6 {
-            v.push("ADCCLK выше 14 МГц".into());
+        if self.pclk2() > apb2 {
+            v.push(format!("APB2 выше {} МГц", apb2 / 1e6));
+        }
+        if self.adc() > adc {
+            v.push(format!("ADCCLK выше {} МГц", adc / 1e6));
+        }
+        if (self.usb() - 48e6).abs() > 1e3 {
+            v.push("USB не 48 МГц".into());
+        }
+        if self.family == Family::F4 {
+            let vin = self.hse / self.pll_m;
+            if !(1e6..=2e6).contains(&vin) {
+                v.push("вход PLL (HSE/M) вне 1–2 МГц".into());
+            }
+            if !(100e6..=432e6).contains(&self.vco()) {
+                v.push("VCO вне 100–432 МГц".into());
+            }
         }
         v
     }
-    /// USART baud error (RM0008 §27.3.4): USARTDIV = PCLK / (16·baud) with a
-    /// 4-bit fraction; BRR = USARTDIV·16.
+    /// USART baud error (RM0008 §27.3.4, RM0383 §19.3.4, OVER8 = 0): USARTDIV =
+    /// PCLK / (16·baud) with a 4-bit fraction; BRR = USARTDIV·16.
     pub fn uart_error(pclk: f64, baud: f64) -> (u32, f64) {
         let div = (pclk / (16.0 * baud) * 16.0).round() / 16.0;
         let brr = (div * 16.0).round() as u32;
@@ -264,19 +348,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pins_complete_and_unique() {
-        assert_eq!(PINS.len(), 48);
-        for (i, p) in PINS.iter().enumerate() {
-            assert_eq!(p.lqfp as usize, i + 1, "{}", p.name);
-        }
-        for s in HEADER_TOP.iter().chain(HEADER_BOTTOM.iter()) {
-            assert!(silk_to_pin(s).is_some() || silk_ru(s).is_some(), "{}", s);
-        }
-    }
-
-    #[test]
-    fn clock_tree() {
-        let c = PROJECT_CLOCKS;
+    fn clock_tree_f103() {
+        let c = F103_CLOCKS;
         assert_eq!(c.sysclk(), 72e6);
         assert_eq!(c.pclk1(), 36e6);
         assert_eq!(c.tim_apb1(), 72e6);
@@ -286,5 +359,87 @@ mod tests {
         let (brr, err) = Clocks::uart_error(72e6, 38400.0);
         assert_eq!(brr, 0x753);
         assert!(err.abs() < 0.01);
+    }
+
+    #[test]
+    fn clock_tree_f411() {
+        let c = F411_CLOCKS;
+        assert_eq!(c.sysclk(), 96e6);
+        assert_eq!(c.pclk1(), 48e6);
+        assert_eq!(c.pclk2(), 96e6);
+        assert_eq!(c.usb(), 48e6);
+        assert!(c.issues().is_empty(), "{:?}", c.issues());
+        // USART1 at 96 MHz, 38400: USARTDIV 156.25 → BRR 0x9C4; USART6 115200 → 0x341
+        assert_eq!(Clocks::uart_error(96e6, 38400.0).0, 0x9C4);
+        assert_eq!(Clocks::uart_error(96e6, 115200.0).0, 0x341);
+    }
+}
+
+/// Live state of one pin decoded from the GPIO registers read over SWD.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PinLive {
+    /// Driven by the output register (output or alternate function), not an input.
+    pub output: bool,
+    pub mode: String,
+    pub idr: u32,
+    pub odr: u32,
+}
+
+/// GPIO ports of the current part: (letter, base).
+pub fn gpio_ports() -> &'static [(&'static str, u32)] {
+    match boards::cur().family {
+        Family::F1 => &[("A", 0x4001_0800), ("B", 0x4001_0C00), ("C", 0x4001_1000)],
+        Family::F4 => &[("A", 0x4002_0000), ("B", 0x4002_0400), ("C", 0x4002_0800), ("H", 0x4002_1C00)],
+    }
+}
+
+/// Register offsets to read for `gpio_live`: F1 CRL CRH IDR ODR; F4 MODER OTYPER OSPEEDR PUPDR IDR ODR AFRL AFRH.
+fn gpio_offsets(f: Family) -> &'static [u32] {
+    match f {
+        Family::F1 => &[0x00, 0x04, 0x08, 0x0C],
+        Family::F4 => &[0x00, 0x04, 0x08, 0x0C, 0x10, 0x14, 0x20, 0x24],
+    }
+}
+
+/// Addresses the board view polls once a second.
+pub fn gpio_poll_addrs() -> Vec<u32> {
+    let f = boards::cur().family;
+    gpio_ports().iter().flat_map(|(_, b)| gpio_offsets(f).iter().map(move |o| b + o)).collect()
+}
+
+pub fn gpio_live(read: impl Fn(u32) -> Option<u32>, pin: &str) -> Option<PinLive> {
+    let port = pin.get(1..2)?;
+    let n: u32 = pin.get(2..)?.parse().ok()?;
+    let base = gpio_ports().iter().find(|(p, _)| *p == port)?.1;
+    match boards::cur().family {
+        Family::F1 => {
+            let cr = read(base + if n < 8 { 0 } else { 4 })?;
+            let nib = (cr >> ((n % 8) * 4)) & 0xF;
+            let (mode, cnf) = (nib & 3, nib >> 2);
+            let text = format!("{} {}", super::svd::gpio_mode_ru(mode, cnf), super::svd::gpio_speed_ru(mode));
+            Some(PinLive { output: mode != 0, mode: text.trim().to_string(), idr: (read(base + 8)? >> n) & 1, odr: (read(base + 12)? >> n) & 1 })
+        }
+        Family::F4 => {
+            let f2 = |off: u32| read(base + off).map(|v| (v >> (n * 2)) & 3);
+            let moder = f2(0x00)?;
+            let otype = if (read(base + 0x04)? >> n) & 1 == 1 { "open-drain" } else { "push-pull" };
+            let speed = super::svd::gpio_f4_ru("OSPEEDR", f2(0x08)?);
+            let pupd = super::svd::gpio_f4_ru("PUPDR", f2(0x0C)?);
+            let text = match moder {
+                0 => format!("вход, {}", pupd),
+                1 => format!("выход {}, {}", otype, speed),
+                2 => {
+                    let afr = read(base + if n < 8 { 0x20 } else { 0x24 })?;
+                    format!("альт. функция AF{} {}, {}", (afr >> ((n % 8) * 4)) & 0xF, otype, speed)
+                }
+                _ => "аналоговый".to_string(),
+            };
+            Some(PinLive {
+                output: moder == 1 || moder == 2,
+                mode: text,
+                idr: (read(base + 0x10)? >> n) & 1,
+                odr: (read(base + 0x14)? >> n) & 1,
+            })
+        }
     }
 }

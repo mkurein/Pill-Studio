@@ -1,11 +1,13 @@
 //! Domain logic without any UI: protocol, SVD, chip knowledge, SWD, ELF,
 //! serial links and the virtual board. Unit-tested with `cargo test`.
 
+pub mod boards;
 pub mod config;
 pub mod debug;
 pub mod elf;
 pub mod link;
 pub mod mcu;
+pub mod mcu_f411;
 pub mod openocd;
 pub mod proto;
 pub mod sim;

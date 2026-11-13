@@ -185,7 +185,7 @@ impl Status {
     }
 }
 
-/// RCC_CSR reset flags (RM0008 §7.3.10) → Russian list.
+/// RCC_CSR reset flags (RM0008 §7.3.10, RM0383 §6.3.21: same bits 26..31) → Russian list.
 pub fn reset_cause_ru(csr: u32) -> String {
     let flags = [
         (31, "LPWR — выход из low-power"),
@@ -203,13 +203,14 @@ pub fn reset_cause_ru(csr: u32) -> String {
     }
 }
 
-/// Firmware tasks with their stack sizes (bytes) from main.c attributes.
-pub const TASKS: [(&str, &str, u32, &str); 3] = [
-    ("defaultTask", "Normal", 1024, "лог Tick/DIAG в UART3, heartbeat"),
-    ("LedTask", "Normal", 512, "мигание PC13 в авто-режиме"),
-    ("Uart1Task", "AboveNormal", 2048, "приём кадров UART1, команды"),
-];
-pub const HEAP_TOTAL: u32 = 10 * 1024;
+/// Firmware tasks of the current board with their stack sizes (bytes) from main.c attributes.
+pub fn tasks() -> &'static [(&'static str, &'static str, u32, &'static str); 3] {
+    &super::boards::cur().tasks
+}
+/// configTOTAL_HEAP_SIZE of the current board's firmware.
+pub fn heap_total() -> u32 {
+    super::boards::cur().heap_total
+}
 
 /// One parsed line of the USART3 text log.
 #[derive(Clone, Debug, PartialEq)]

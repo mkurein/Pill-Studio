@@ -10,10 +10,15 @@
   Cortex-M4, DEV_ID 0x431, Flash 512 КБ, CPUTAPID 0x2ba01477 (stm32f1x.cfg его
   отвергает). Для T10 нужна плата Blue Pill со STM32F103C8.
 
+- [x] **T11** Pill Studio для двух плат (ADR-016): профили Blue Pill / Black Pill,
+  прошивка F411CE с протоколом и `g_diag`, общий `hil.py`. На Black Pill
+  `hil.py test` — PASS 28/28 (2026-11-13). Blue Pill на железе после правки
+  `fram.c` не проверялась (нет платы) — входит в T10.
+
 ## Done in branch hil-studio (2026-11)
 
 T1–T7 закрыты: см. ADR-011..013, PROTOCOL.md.
-F103 Studio (`studio/`, ADR-014): GUI на egui, виртуальная плата, `.app`/`.dmg`.
+Pill Studio (`studio/`, ADR-014): GUI на egui, виртуальная плата, `.app`/`.dmg`.
 
 ## Previously current
 

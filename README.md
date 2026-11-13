@@ -26,7 +26,7 @@ Firmware для STM32F103C8 (Blue Pill) на FreeRTOS: бинарные кома
 Core/            исходники (main.c, uart.c, fram.c, crc16.c)
 Drivers/         STM32 HAL + CMSIS
 Middlewares/     FreeRTOS 10.0.1
-studio/          F103 Studio — отладочная программа на Rust (egui); сборка: studio/BUILD.md
+studio/          Pill Studio — отладочная программа на Rust (egui); сборка: studio/BUILD.md
 docs/            ядро документации (короткое) + guides/ notes/ lessons/
 primGPT.ioc      CubeMX (см. ADR-005 перед генерацией)
 ```

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Hardware-in-the-loop tool for the STM32F103C8T (Blue Pill) firmware.
+Hardware-in-the-loop tool for the primGPT firmware on two boards:
+STM32F103C8T (Blue Pill) and STM32F411CEU6 (Black Pill). The board is picked
+from the linker script in the repo root, or env HIL_BOARD=f103|f411.
 
 Lets a human or an AI agent build, flash, talk to and inspect the real board,
 and run a full self-check with a machine-readable verdict.
@@ -9,13 +11,14 @@ and run a full self-check with a machine-readable verdict.
   .venv/bin/python tools/hil.py test             # build + flash + full test suite
   .venv/bin/python tools/hil.py test --no-flash  # test what is already on the chip
   .venv/bin/python tools/hil.py ping | status | led on|off|auto | fram 0|1|2
-  .venv/bin/python tools/hil.py log 5            # USART3 text log for 5 s
+  .venv/bin/python tools/hil.py log 5            # text log (USART3 / USART6) for 5 s
   .venv/bin/python tools/hil.py diag | regs | gpio | read <symbol|0xaddr> [words]
 
 Physical channels:
   SWD (ST-Link + OpenOCD) : flash, CPU registers, RAM (g_diag), GPIO registers
   USART1 38400 (PA9/PA10) : binary protocol, see Core/Inc/DataFile.h
-  USART3 115200 (PB10)    : text log (BOOT/FRAM/DIAG/FAULT lines)
+  log UART 115200         : text log (BOOT/FRAM/DIAG/FAULT lines)
+                            F103: USART3 TX PB10, F411: USART6 TX PA11
 
 Ports come from tools/hil.json, env HIL_PROTO_PORT / HIL_LOG_PORT, or
 `hil.py detect` (writes tools/hil.json). Exit code 0 = all checks passed.
@@ -32,7 +35,27 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ELF = os.path.join(ROOT, "build", "primGPT.elf")
+BOARDS = {
+    # GPIO register offsets: F1 = CRL, CRH, IDR, ODR; F4 = MODER, OTYPER, OSPEEDR, PUPDR, IDR, ODR
+    "f103": {"name": "Blue Pill STM32F103C8T6", "elf": "primGPT.elf", "target": "target/stm32f1x.cfg",
+             "gpioc": 0x40011000, "idr": 0x08, "odr": 0x0C, "cfg_reg": ("GPIOC_CRH", 0x04),
+             "dev_id": 0x410, "log_uart": "USART3 (PB10)"},
+    "f411": {"name": "Black Pill STM32F411CEU6", "elf": "primGPT_F411.elf", "target": "target/stm32f4x.cfg",
+             "gpioc": 0x40020800, "idr": 0x10, "odr": 0x14, "cfg_reg": ("GPIOC_MODER", 0x00),
+             "dev_id": 0x431, "log_uart": "USART6 (PA11)"},
+}
+
+
+def pick_board():
+    env = os.environ.get("HIL_BOARD", "").lower()
+    if env in BOARDS:
+        return env
+    return "f411" if os.path.exists(os.path.join(ROOT, "STM32F411CEUX_FLASH.ld")) else "f103"
+
+
+BOARD_ID = pick_board()
+BOARD = BOARDS[BOARD_ID]
+ELF = os.path.join(ROOT, "build", BOARD["elf"])
 CFG_FILE = os.path.join(ROOT, "tools", "hil.json")
 
 PROTO_BAUD = 38400
@@ -58,8 +81,7 @@ DIAG_FIELDS = ["magic", "boot_count", "reset_cause", "heartbeat",
 DIAG_ERR = {0: "NONE", 1: "Error_Handler", 2: "HardFault", 3: "MemManage", 4: "BusFault",
             5: "UsageFault", 6: "StackOverflow", 7: "MallocFailed"}
 
-GPIOC_BASE = 0x40011000
-GPIOA_BASE = 0x40010800
+GPIOC_BASE = BOARD["gpioc"]
 
 
 def crc16(data: bytes) -> int:
@@ -81,7 +103,7 @@ def frame(*payload: int) -> bytes:
 def load_cfg():
     cfg = {"proto_port": None, "log_port": None,
            "openocd": ["-f", "interface/stlink.cfg", "-c", "transport select hla_swd",
-                       "-f", "target/stm32f1x.cfg"]}
+                       "-f", BOARD["target"]]}
     if os.path.exists(CFG_FILE):
         with open(CFG_FILE) as f:
             cfg.update(json.load(f))
@@ -196,9 +218,12 @@ def read_regs(cfg):
 
 
 def read_gpio(cfg):
-    c = read_words(cfg, GPIOC_BASE, 4)       # CRL, CRH, IDR, ODR
-    return {"PC13_odr": (c[3] >> 13) & 1, "PC13_idr": (c[2] >> 13) & 1,
-            "PC15_odr": (c[3] >> 15) & 1, "GPIOC_CRH": c[1]}
+    c = read_words(cfg, GPIOC_BASE, 6)
+    w = lambda off: c[off // 4]
+    odr, idr = w(BOARD["odr"]), w(BOARD["idr"])
+    name, off = BOARD["cfg_reg"]
+    return {"PC13_odr": (odr >> 13) & 1, "PC13_idr": (idr >> 13) & 1,
+            "PC15_odr": (odr >> 15) & 1, name: w(off)}
 
 
 # --- UART protocol ------------------------------------------------------------
@@ -315,7 +340,15 @@ def run_tests(cfg, args):
             if not cfg["proto_port"]:
                 return rep
 
-    # boot log (USART3) right after reset
+    if swd and not args.no_flash:
+        try:
+            idc = read_words(cfg, 0xE0042000, 1)[0]
+            rep.add(f"swd: chip is {BOARD['name']} (DEV_ID 0x{BOARD['dev_id']:03x})",
+                    (idc & 0xFFF) == BOARD["dev_id"], hex(idc))
+        except SwdError as e:
+            rep.add("swd: IDCODE read", False, str(e))
+
+    # boot log (log UART) right after reset
     log_text = ""
     if cfg["log_port"] and not args.no_flash and swd:
         log_text = read_log(cfg["log_port"], 2.5)
@@ -441,7 +474,7 @@ def detect(cfg):
             txt = read_log(port, 2.2)
             if re.search(r"Tick:|BOOT fw=|DIAG ", txt):
                 found["log_port"] = port
-                print(f"{port}: USART3 log @ {LOG_BAUD}")
+                print(f"{port}: log @ {LOG_BAUD}")
                 continue
             p = Proto(port)
             r = p.cmd(CMD_PING)
@@ -506,7 +539,9 @@ def main():
             try:
                 o = openocd(cfg, ["mdw 0xE0042000 1"])
                 idc = parse_mdw(o).get(0xE0042000)
+                res["board"] = {"id": BOARD_ID, "name": BOARD["name"]}
                 res["swd"] = {"ok": True, "DBGMCU_IDCODE": hex(idc) if idc is not None else None,
+                              "chip_matches_board": idc is not None and (idc & 0xFFF) == BOARD["dev_id"],
                               "voltage": (re.search(r"Target voltage: ([\d.]+)", o) or [None, None])[1]}
             except SwdError as e:
                 res["swd"] = {"ok": False, "error": str(e)}
@@ -557,7 +592,7 @@ def main():
             out(need_proto().cmd(*bytes.fromhex(a.hex), wait=1.0))
         elif a.cmd == "log":
             if not cfg["log_port"]:
-                raise SystemExit("USART3 port unknown: run `hil.py detect` or set HIL_LOG_PORT")
+                raise SystemExit("log port unknown: run `hil.py detect` or set HIL_LOG_PORT")
             print(read_log(cfg["log_port"], a.seconds))
         elif a.cmd == "diag":
             d = read_diag(cfg)

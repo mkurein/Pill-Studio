@@ -2,7 +2,7 @@
 
 Нативная (Rust + egui) отладочная студия для прошивки **primGPT** + FreeRTOS на двух платах:
 **Blue Pill** (STM32F103C8T6, этот репозиторий) и **Black Pill** (STM32F411CEU6,
-репозиторий [F411CE](https://github.com/kureinmaxim/F411CE)). Плата выбирается в шапке;
+репозиторий [F411CE](https://github.com/mkurein/F411CE)). Плата выбирается в шапке;
 выводы, SVD, тактирование, цель OpenOCD, ELF и порты — свои для каждой (ADR-016).
 macOS и Windows, без WebView и Node.
 

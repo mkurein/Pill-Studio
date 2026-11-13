@@ -55,7 +55,7 @@ Reason: аппаратный NSS на F1 держит линию low всё вр
 
 ## ADR-009 — Single project root = git repo
 
-Проект = этот репозиторий (`primGPT/`, GitHub `mkurein/F103C8T`).
+Проект = этот репозиторий (`primGPT/`, GitHub `mkurein/Pill-Studio`, до 2026-11-13 — `F103C8T`).
 Родительская папка `STM32F1/` — только workspace STM32CubeIDE (`.metadata`).
 Открывать в VS Code / Cursor / Claude Code / OpenCode именно `primGPT/`.
 

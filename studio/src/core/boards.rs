@@ -195,7 +195,7 @@ pub static BLUE_PILL: Profile = Profile {
     ],
     heap_total: 10 * 1024,
     spi_mem: "FRAM 32 КБ",
-    repo: "github.com/mkurein/F103C8T",
+    repo: "github.com/mkurein/Pill-Studio",
 };
 
 pub static BLACK_PILL: Profile = Profile {
@@ -261,7 +261,7 @@ pub static BLACK_PILL: Profile = Profile {
     ],
     heap_total: 10 * 1024,
     spi_mem: "W25Q64 8 МБ",
-    repo: "github.com/kureinmaxim/F411CE",
+    repo: "github.com/mkurein/F411CE",
 };
 
 #[cfg(test)]

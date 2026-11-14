@@ -29,6 +29,8 @@ pub struct Elf {
     /// `Default_Handler` from startup .s (a NOTYPE label, so not in `syms`):
     /// unused IRQ handlers are weak aliases at this address.
     pub default_handler: Option<u32>,
+    /// Words of `.isr_vector`: initial SP, Reset, …, IRQs.
+    pub vectors: Vec<u32>,
 }
 
 impl Elf {
@@ -55,11 +57,16 @@ impl Elf {
             .filter_map(|s| Some(Section { name: s.name().ok()?.to_string(), addr: s.address() as u32, size: s.size() as u32 }))
             .collect();
         let default_handler = file.symbols().find(|s| s.name() == Ok("Default_Handler")).map(|s| s.address() as u32 & !1);
+        let vectors = file
+            .section_by_name(".isr_vector")
+            .and_then(|s| s.data().ok().map(|d| d.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect()))
+            .unwrap_or_default();
         Ok(Elf {
             path: path.to_path_buf(),
             syms,
             sections,
             default_handler,
+            vectors,
         })
     }
 

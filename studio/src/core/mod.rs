@@ -6,6 +6,7 @@ pub mod config;
 pub mod debug;
 pub mod elf;
 pub mod faults;
+pub mod layout;
 pub mod link;
 pub mod mcu;
 pub mod mcu_f411;

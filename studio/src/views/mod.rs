@@ -3,6 +3,7 @@ pub mod debug;
 pub mod learn;
 pub mod log;
 pub mod mcu;
+pub mod memory;
 pub mod overview;
 pub mod proto_view;
 pub mod regs;

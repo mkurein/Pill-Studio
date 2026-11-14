@@ -508,7 +508,7 @@ fn board_name(b: BoardId) -> &'static str {
 }
 
 /// "только что", "12 мин", "3 ч", "2 дн".
-fn ago(t: u64) -> String {
+pub fn ago(t: u64) -> String {
     if t == 0 {
         return String::new();
     }

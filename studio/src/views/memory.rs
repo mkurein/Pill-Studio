@@ -131,7 +131,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             };
             ui.label(RichText::new(src).small().color(p.muted));
         });
-        ui.add_space(6.0);
+        super::fresh::bar(ui, sh);
         match st.tab {
             Tab::Map => map_tab(ui, sh, st),
             Tab::Vectors => vectors_tab(ui, sh, st),

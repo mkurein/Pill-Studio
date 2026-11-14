@@ -47,6 +47,11 @@ pub enum Job {
     /// Run these cases of `faults::cases()`, each followed by STATUS.
     Robust(Vec<usize>),
     RobustStop,
+    /// Reset the board halted and run it from one of these addresses to the
+    /// next with breakpoints, recording the order and the cycle counter.
+    BootTrace(Vec<u32>),
+    /// Compare the board's Flash with the loaded ELF.
+    VerifyFlash,
     SwdOpen(OcdConfig),
     SwdSim,
     SwdClose,
@@ -146,6 +151,22 @@ pub struct State {
     pub robust_left: usize,
     /// Counter changes over the whole run.
     pub robust_total: Option<String>,
+    /// Steps reached by the last live boot trace.
+    pub boot_trace: Vec<crate::core::boot::Hit>,
+    /// How that trace ended ("" = not run yet).
+    pub boot_note: String,
+    /// Flash of the connected board compared with the loaded ELF.
+    pub flash_check: Option<FlashCheck>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlashCheck {
+    pub same: bool,
+    /// First address that differs.
+    pub at: Option<u32>,
+    pub bytes: u32,
+    /// Build time of the ELF that was compared.
+    pub elf_mtime: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -572,10 +593,14 @@ impl Eng {
         match Elf::load(p) {
             Ok(e) => {
                 self.st.elf_mtime = mtime(p);
+                // a trace belongs to the build it was taken on
+                self.st.boot_trace.clear();
+                self.st.boot_note.clear();
                 if toast {
                     self.toast(Tone::Ok, format!("ELF загружен: {} символов", e.syms.len()));
                 }
                 self.st.elf = Some(Arc::new(e));
+                self.verify_flash();
             }
             Err(e) => self.toast(Tone::Err, e),
         }
@@ -731,6 +756,113 @@ impl Eng {
             };
             self.toast(if dead > 0 { Tone::Err } else if bad > 0 { Tone::Warn } else { Tone::Ok }, msg);
         }
+    }
+
+    /// Read the board's Flash (the core keeps running) and compare it with
+    /// the code and constants of the loaded ELF.
+    fn verify_flash(&mut self) {
+        self.st.flash_check = None;
+        let Some(elf) = self.st.elf.clone() else { return };
+        let Some(Swd::Real(o)) = self.swd.as_mut() else { return };
+        let mut bytes = 0u32;
+        let mut at = None;
+        'all: for (base, data) in &elf.flash_image {
+            for (i, block) in data.chunks(1024).enumerate() {
+                let addr = base + (i * 1024) as u32;
+                let Ok(words) = o.read_words(addr, block.len().div_ceil(4) as u32) else { return };
+                let got: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                if let Some(k) = block.iter().zip(&got).position(|(a, b)| a != b) {
+                    at = Some(addr + k as u32);
+                    break 'all;
+                }
+                bytes += block.len() as u32;
+            }
+        }
+        self.st.flash_check = Some(FlashCheck { same: at.is_none(), at, bytes, elf_mtime: self.st.elf_mtime });
+        self.repaint = true;
+    }
+
+    /// Live boot trace over SWD. Only a few hardware breakpoints exist, so
+    /// they are set on the next few steps not reached yet; whichever halts
+    /// the core is recorded, and so the real order shows up by itself.
+    fn boot_trace(&mut self, addrs: Vec<u32>) -> Result<String, String> {
+        use crate::core::boot::Hit;
+        const DEMCR: u32 = 0xE000_EDFC;
+        const DWT_CTRL: u32 = 0xE000_1000;
+        const DWT_CYCCNT: u32 = 0xE000_1004;
+        const WINDOW: usize = 4;
+        let Some(Swd::Real(o)) = self.swd.as_mut() else { return Err("нужен ST-Link: на виртуальной плате старт не трассируется".into()) };
+        o.eval("reset halt")?;
+        // cycle counter: trace on, counter zeroed and running
+        let demcr = o.read_words(DEMCR, 1)?[0];
+        o.write_word(DEMCR, demcr | 1 << 24)?;
+        o.write_word(DWT_CYCCNT, 0)?;
+        let ctrl = o.read_words(DWT_CTRL, 1)?[0];
+        o.write_word(DWT_CTRL, ctrl | 1)?;
+        let mut left: Vec<u32> = addrs.iter().map(|a| a & !1).collect();
+        let mut hits: Vec<Hit> = vec![];
+        let mut note = String::new();
+        let pc = |o: &mut OpenOcd| -> Result<u32, String> {
+            let s = o.eval("reg pc")?;
+            let hex = s.rsplit("0x").next().unwrap_or("").split_whitespace().next().unwrap_or("").to_string();
+            u32::from_str_radix(hex.trim(), 16).map(|a| a & !1).map_err(|_| format!("не разобрать PC: {s}"))
+        };
+        // `reset halt` stops on the first instruction, which is a step itself
+        let at = pc(o)?;
+        if let Some(i) = left.iter().position(|a| *a == at) {
+            hits.push(Hit { addr: left.remove(i), order: 0, cycles: 0 });
+        }
+        while !left.is_empty() {
+            let set: Vec<u32> = left.iter().take(WINDOW).copied().collect();
+            let mut placed = vec![];
+            let mut fail = None;
+            for a in &set {
+                match o.eval(&format!("bp 0x{a:08x} 2 hw")) {
+                    Ok(_) => placed.push(*a),
+                    Err(e) => {
+                        fail = Some(e);
+                        break;
+                    }
+                }
+            }
+            let mut halted = false;
+            if fail.is_none() {
+                o.eval("resume")?;
+                let t0 = Instant::now();
+                while t0.elapsed() < Duration::from_millis(2500) {
+                    if o.state() == "halted" {
+                        halted = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+            }
+            let stop = if halted { pc(o).ok() } else { None };
+            for a in &placed {
+                let _ = o.eval(&format!("rbp 0x{a:08x}"));
+            }
+            if let Some(e) = fail {
+                let _ = o.eval("resume");
+                return Err(format!("точка останова не поставилась ({e}). Снимите свои точки останова и повторите."));
+            }
+            match stop.and_then(|at| left.iter().position(|a| *a == at)) {
+                Some(i) => {
+                    let cycles = o.read_words(DWT_CYCCNT, 1)?[0];
+                    hits.push(Hit { addr: left.remove(i), order: hits.len(), cycles });
+                }
+                None => {
+                    note = match stop {
+                        Some(at) => format!("ядро остановилось в другом месте (0x{at:08X}) — возможно, сбой или своя точка останова"),
+                        None => "за 2.5 с следующий шаг не достигнут: программа не дошла до него или шаг выполняется в другом порядке".to_string(),
+                    };
+                    break;
+                }
+            }
+        }
+        let _ = o.eval("resume");
+        self.st.boot_trace = hits;
+        let n = self.st.boot_trace.len();
+        Ok(if note.is_empty() { format!("пройдено шагов: {n}, плата запущена") } else { format!("пройдено шагов: {n}; {note}. Плата запущена.") })
     }
 
     fn apply_reply(&mut self, body: &[u8], r: &Reply, raw: bool) {
@@ -1157,6 +1289,35 @@ impl Eng {
                 self.robust_q = which.into();
                 self.st.robust_left = self.robust_q.len();
             }
+            Job::VerifyFlash => {
+                if !matches!(self.swd, Some(Swd::Real(_))) {
+                    self.toast(Tone::Warn, "Сверка с платой: нужен ST-Link");
+                } else {
+                    self.verify_flash();
+                    match self.st.flash_check {
+                        Some(c) if c.same => self.toast(Tone::Ok, format!("На плате эта сборка: {} Б совпадают", c.bytes)),
+                        Some(c) => self.toast(Tone::Warn, format!("На плате другая программа: отличие с 0x{:08X}", c.at.unwrap_or(0))),
+                        None => self.toast(Tone::Err, "Сверка с платой не удалась: Flash не читается"),
+                    }
+                }
+            }
+            Job::BootTrace(addrs) => {
+                self.st.boot_trace.clear();
+                let full = addrs.len();
+                match self.boot_trace(addrs) {
+                    Ok(note) => {
+                        let all = self.st.boot_trace.len() == full;
+                        self.toast(if all { Tone::Ok } else { Tone::Warn }, format!("Трасса старта: {note}"));
+                        self.st.boot_note = note;
+                    }
+                    Err(e) => {
+                        self.st.boot_note = format!("не выполнена: {e}");
+                        self.toast(Tone::Err, format!("Трасса старта: {e}"));
+                    }
+                }
+                self.last_halt_pc = None;
+                self.swd_refresh_state();
+            }
             Job::RobustStop => {
                 self.robust_q.clear();
                 self.st.robust_left = 0;
@@ -1205,6 +1366,7 @@ impl Eng {
                         self.st.swd = Some("ST-Link (OpenOCD)".into());
                         self.swd_refresh_state();
                         self.toast(Tone::Ok, "SWD подключён");
+                        self.verify_flash();
                     }
                     Err(e) => {
                         self.st.swd = None;
@@ -1221,6 +1383,7 @@ impl Eng {
             }
             Job::SwdClose => {
                 self.swd = None;
+                self.st.flash_check = None;
                 self.st.swd = None;
                 self.st.regs.clear();
                 self.st.disasm.clear();
@@ -1464,6 +1627,7 @@ impl Eng {
                         self.st.job_out.extend(s.lines().map(String::from));
                         self.st.job_ok = Some(true);
                         self.toast(Tone::Ok, "Прошито и проверено, плата перезапущена");
+                        self.verify_flash();
                     }
                     Err(e) => {
                         self.st.job_out.push(e.clone());

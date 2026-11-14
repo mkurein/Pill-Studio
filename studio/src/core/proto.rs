@@ -193,6 +193,7 @@ pub fn reset_cause_ru(csr: u32) -> String {
         (29, "IWDG — независимый сторож"),
         (28, "SFT — программный сброс"),
         (27, "POR/PDR — включение питания"),
+        (25, "BOR — просадка питания"),
         (26, "PIN — вывод NRST (кнопка, ST-Link)"),
     ];
     let v: Vec<&str> = flags.iter().filter(|(b, _)| csr & (1 << b) != 0).map(|(_, s)| *s).collect();

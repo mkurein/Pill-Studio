@@ -31,6 +31,12 @@ pub struct Elf {
     pub default_handler: Option<u32>,
     /// Words of `.isr_vector`: initial SP, Reset, …, IRQs.
     pub vectors: Vec<u32>,
+    /// Every named symbol with its raw value, also labels without a size
+    /// (`Reset_Handler`, `LoopCopyDataInit`, `_sdata`, `_estack`).
+    pub labels: std::collections::HashMap<String, u32>,
+    /// Contents of the sections that live in Flash (vectors, code, constants),
+    /// to check that the board runs this very build.
+    pub flash_image: Vec<(u32, Vec<u8>)>,
 }
 
 impl Elf {
@@ -67,6 +73,16 @@ impl Elf {
             sections,
             default_handler,
             vectors,
+            flash_image: file
+                .sections()
+                .filter(|s| (0x0800_0000..0x0900_0000).contains(&s.address()))
+                .filter_map(|s| Some((s.address() as u32, s.data().ok().filter(|d| !d.is_empty())?.to_vec())))
+                .collect(),
+            labels: file
+                .symbols()
+                .filter(|s| !matches!(s.kind(), SymbolKind::File | SymbolKind::Section))
+                .filter_map(|s| Some((s.name().ok().filter(|n| !n.is_empty() && !n.starts_with('$'))?.to_string(), s.address() as u32)))
+                .collect(),
         })
     }
 

@@ -1,5 +1,7 @@
 pub mod board;
+pub mod boot;
 pub mod debug;
+pub mod fresh;
 pub mod learn;
 pub mod log;
 pub mod mcu;

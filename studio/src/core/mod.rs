@@ -2,6 +2,7 @@
 //! serial links and the virtual board. Unit-tested with `cargo test`.
 
 pub mod boards;
+pub mod boot;
 pub mod config;
 pub mod debug;
 pub mod elf;

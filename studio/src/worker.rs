@@ -2,7 +2,7 @@
 //! `Job`s, the worker runs them and publishes `State` + streamed events into an
 //! inbox that the UI drains once per frame (pattern from DigiPot Studio).
 
-use crate::core::config::Config;
+use crate::core::config::{self, Config, Run};
 use crate::core::debug::{self, AsmLine, StepKind};
 use crate::core::elf::{self, Elf};
 use crate::core::faults::{self, Step};
@@ -65,6 +65,10 @@ pub enum Job {
     WriteWord(u32, u32),
     OcdExec(String),
     LoadElf(PathBuf),
+    /// Another project of the same board became active: reload its ELF.
+    Project(String),
+    /// Build, and flash right after a successful build.
+    BuildFlash(Config),
     Build(Config),
     Flash(Config),
     HilTest(Config),
@@ -128,6 +132,12 @@ pub struct State {
     pub job: Option<String>,
     pub job_out: Vec<String>,
     pub job_ok: Option<bool>,
+    /// Git state of the project: "main a1b2c3d +изм.", empty outside git.
+    pub git: String,
+    /// Newest change of the project sources (Core/, Makefile, *.ld), unix s.
+    pub src_mtime: Option<u64>,
+    /// When the loaded ELF was written, unix s.
+    pub elf_mtime: Option<u64>,
     pub ocd_console: Vec<String>,
     pub sim_fram: bool,
     /// Results of the reliability test, in the order run.
@@ -191,6 +201,7 @@ struct Inbox {
     lines: Vec<LogLine>,
     samples: Vec<Sample>,
     toasts: Vec<(Tone, String)>,
+    runs: Vec<Run>,
 }
 
 pub struct Update {
@@ -199,6 +210,8 @@ pub struct Update {
     pub lines: Vec<LogLine>,
     pub samples: Vec<Sample>,
     pub toasts: Vec<(Tone, String)>,
+    /// Finished build / flash / autotest runs, for the saved history.
+    pub runs: Vec<Run>,
 }
 
 pub struct Worker {
@@ -229,6 +242,10 @@ struct BgJob {
     out: Arc<Mutex<Vec<String>>>,
     done: Arc<Mutex<Option<bool>>>,
     reload_elf: bool,
+    started: Instant,
+    git: String,
+    /// "Собрать и прошить": flash with this config after a good build.
+    then_flash: Option<Box<Config>>,
 }
 
 struct Eng {
@@ -257,6 +274,9 @@ struct Eng {
     robust_q: VecDeque<usize>,
     robust_prev: Option<Status>,
     robust_first: Option<Status>,
+    last_watch: Instant,
+    /// State changed without new txns/lines/toasts: the UI still has to repaint.
+    repaint: bool,
 }
 
 impl Worker {
@@ -293,6 +313,8 @@ impl Worker {
                     robust_q: VecDeque::new(),
                     robust_prev: None,
                     robust_first: None,
+                    last_watch: Instant::now() - Duration::from_secs(10),
+                    repaint: false,
                 };
                 for p in elf::candidates(&project) {
                     if p.exists() {
@@ -343,6 +365,7 @@ impl Worker {
             lines: std::mem::take(&mut ib.lines),
             samples: std::mem::take(&mut ib.samples),
             toasts: std::mem::take(&mut ib.toasts),
+            runs: std::mem::take(&mut ib.runs),
         }
     }
 }
@@ -366,7 +389,8 @@ impl Eng {
         ib.lines.append(&mut self.out.lines);
         ib.samples.append(&mut self.out.samples);
         ib.toasts.append(&mut self.out.toasts);
-        changed || self.bg.is_some()
+        ib.runs.append(&mut self.out.runs);
+        changed || self.bg.is_some() || std::mem::take(&mut self.repaint)
     }
 
     fn push_line(&mut self, text: String) {
@@ -422,6 +446,10 @@ impl Eng {
             self.toast(Tone::Err, "OpenOCD завершился — SWD отключён");
         }
         self.watch_stops();
+        if self.last_watch.elapsed() >= Duration::from_secs(2) {
+            self.last_watch = Instant::now();
+            self.watch_project();
+        }
         // background process
         if let Some(bg) = &self.bg {
             self.st.job_out = lock(&bg.out).clone();
@@ -429,12 +457,29 @@ impl Eng {
             if let Some(ok) = done {
                 let name = bg.name.clone();
                 let reload = bg.reload_elf;
+                let run = Run {
+                    t: config::now_secs(),
+                    dir: self.project.to_string_lossy().into_owned(),
+                    board: boards::cur().id,
+                    what: name.clone(),
+                    ok,
+                    secs: bg.started.elapsed().as_secs_f32(),
+                    git: bg.git.clone(),
+                };
+                let then = self.bg.take().and_then(|b| b.then_flash);
+                self.out.runs.push(run);
                 self.st.job = None;
                 self.st.job_ok = Some(ok);
-                self.bg = None;
                 self.toast(if ok { Tone::Ok } else { Tone::Err }, format!("{}: {}", name, if ok { "успешно" } else { "ошибка" }));
                 if reload && ok {
                     self.reload_elf();
+                }
+                self.last_watch = Instant::now() - Duration::from_secs(10);
+                if let (true, Some(cfg)) = (ok, then) {
+                    let log = std::mem::take(&mut self.st.job_out);
+                    self.run(Job::Flash(*cfg));
+                    let flash = std::mem::take(&mut self.st.job_out);
+                    self.st.job_out = log.into_iter().chain(std::iter::once(String::new())).chain(flash).collect();
                 }
             }
         }
@@ -501,6 +546,19 @@ impl Eng {
         }
     }
 
+    /// Sources newer than the ELF = edited (in Cursor) after the last build.
+    /// Git is asked again only when the sources change.
+    fn watch_project(&mut self) {
+        let src = newest_source(&self.project);
+        if src != self.st.src_mtime || self.st.git.is_empty() {
+            self.st.git = git_state(&self.project);
+        }
+        let elf = self.st.elf.as_ref().and_then(|e| mtime(&e.path));
+        self.repaint |= (src, elf) != (self.st.src_mtime, self.st.elf_mtime);
+        self.st.src_mtime = src;
+        self.st.elf_mtime = elf;
+    }
+
     fn reload_elf(&mut self) {
         for p in elf::candidates(&self.project) {
             if p.exists() {
@@ -513,6 +571,7 @@ impl Eng {
     fn load_elf(&mut self, p: &std::path::Path, toast: bool) {
         match Elf::load(p) {
             Ok(e) => {
+                self.st.elf_mtime = mtime(p);
                 if toast {
                     self.toast(Tone::Ok, format!("ELF загружен: {} символов", e.syms.len()));
                 }
@@ -979,7 +1038,8 @@ impl Eng {
                 });
                 self.st.job = Some(name.to_string());
                 self.st.job_ok = None;
-                self.bg = Some(BgJob { name: name.to_string(), out, done, reload_elf });
+                let git = git_state(&self.project);
+                self.bg = Some(BgJob { name: name.to_string(), out, done, reload_elf, started: Instant::now(), git, then_flash: None });
             }
         }
     }
@@ -1339,6 +1399,7 @@ impl Eng {
                 self.svd = svd;
                 self.sim = SimBoard::new();
                 self.project = PathBuf::from(project);
+                self.last_watch = Instant::now() - Duration::from_secs(10);
                 let keep = (self.st.poll_ms, self.st.sim_fram);
                 self.st = State { poll_ms: keep.0, sim_fram: keep.1, ..Default::default() };
                 self.last_halt_pc = None;
@@ -1355,7 +1416,35 @@ impl Eng {
                 self.toolchain = cfg.toolchain_dir.clone();
                 self.spawn_bg("Сборка", c, true);
             }
+            Job::BuildFlash(cfg) => {
+                if self.bg.is_some() {
+                    self.toast(Tone::Warn, "Дождитесь окончания текущей операции");
+                    return;
+                }
+                let c = Self::shell(&cfg.build_cmd, &cfg.project_dir, &cfg.toolchain_dir);
+                self.toolchain = cfg.toolchain_dir.clone();
+                self.spawn_bg("Сборка", c, true);
+                if let Some(bg) = self.bg.as_mut() {
+                    bg.then_flash = Some(Box::new(cfg));
+                }
+            }
+            Job::Project(dir) => {
+                self.project = PathBuf::from(dir);
+                self.st.elf = None;
+                self.st.elf_mtime = None;
+                self.st.job_out.clear();
+                self.st.job_ok = None;
+                for p in elf::candidates(&self.project) {
+                    if p.exists() {
+                        self.load_elf(&p, false);
+                        break;
+                    }
+                }
+                self.st.git.clear();
+                self.watch_project();
+            }
             Job::Flash(cfg) => {
+                let t1 = Instant::now();
                 let elf = self.st.elf.as_ref().map(|e| e.path.clone());
                 let Some(elf) = elf else {
                     self.toast(Tone::Err, "Нет ELF: сначала соберите прошивку");
@@ -1382,6 +1471,15 @@ impl Eng {
                         self.toast(Tone::Err, format!("Прошивка: {}", e));
                     }
                 }
+                self.out.runs.push(Run {
+                    t: config::now_secs(),
+                    dir: self.project.to_string_lossy().into_owned(),
+                    board: boards::cur().id,
+                    what: "Прошивка".into(),
+                    ok: self.st.job_ok == Some(true),
+                    secs: t1.elapsed().as_secs_f32(),
+                    git: self.st.git.clone(),
+                });
                 self.swd_refresh_state();
             }
             Job::HilTest(cfg) => {
@@ -1451,4 +1549,58 @@ fn ctl_fail(cmd: &str, err: &str) -> String {
         _ => "Команда отладки не прошла",
     };
     format!("{what}: {err}")
+}
+
+fn mtime(p: &std::path::Path) -> Option<u64> {
+    let t = std::fs::metadata(p).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+/// Newest modification time of the firmware sources: Core/ (.c .h .s),
+/// the Makefile and linker scripts in the project root.
+fn newest_source(project: &std::path::Path) -> Option<u64> {
+    fn walk(d: &std::path::Path, depth: u32, best: &mut Option<u64>) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth < 4 {
+                    walk(&p, depth + 1, best);
+                }
+            } else if matches!(p.extension().and_then(|x| x.to_str()), Some("c" | "h" | "s" | "S")) {
+                *best = (*best).max(mtime(&p));
+            }
+        }
+    }
+    let mut best = None;
+    walk(&project.join("Core"), 0, &mut best);
+    if let Ok(rd) = std::fs::read_dir(project) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "Makefile" || name.ends_with(".ld") {
+                best = best.max(mtime(&p));
+            }
+        }
+    }
+    best
+}
+
+/// "main a1b2c3d +изм." (uncommitted changes to tracked files), empty outside git.
+fn git_state(dir: &std::path::Path) -> String {
+    let git = |args: &[&str]| -> Option<String> {
+        let mut c = Command::new(config::find_tool(if cfg!(windows) { "git.exe" } else { "git" }));
+        c.arg("-C").arg(dir).args(args).stdin(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        let o = c.output().ok().filter(|o| o.status.success())?;
+        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let Some(head) = git(&["log", "-1", "--format=%h"]) else { return String::new() };
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+    format!("{branch} {head}{}", if dirty { " +изм." } else { "" })
 }

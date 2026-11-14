@@ -18,6 +18,38 @@ pub struct Slot {
     pub log_port: String,
 }
 
+/// A firmware project used recently (any board): the switch list.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Recent {
+    pub dir: String,
+    pub board: BoardId,
+    pub build_cmd: String,
+    /// Unix seconds of the last time it was the active project.
+    pub used: u64,
+}
+
+/// One build / flash / autotest run, kept across restarts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Run {
+    /// Unix seconds when it finished.
+    pub t: u64,
+    pub dir: String,
+    pub board: BoardId,
+    /// "Сборка", "Прошивка", "Автотест hil.py".
+    pub what: String,
+    pub ok: bool,
+    pub secs: f32,
+    /// "main a1b2c3d +изм." at the start of the run, empty outside git.
+    pub git: String,
+}
+
+pub const RECENT_MAX: usize = 12;
+pub const HISTORY_MAX: usize = 60;
+
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -39,6 +71,10 @@ pub struct Config {
     pub editor_follow: bool,
     /// Editor CLI: "cursor", "code" or a full path. Empty = find Cursor.
     pub editor_cmd: String,
+    /// Projects used recently, newest first.
+    pub recent: Vec<Recent>,
+    /// Build / flash / autotest runs, newest last.
+    pub history: Vec<Run>,
 }
 
 impl Default for Config {
@@ -56,6 +92,8 @@ impl Default for Config {
             dark: true,
             editor_follow: true,
             editor_cmd: String::new(),
+            recent: vec![],
+            history: vec![],
         }
     }
 }
@@ -82,6 +120,49 @@ impl Config {
         self.build_cmd = if s.build_cmd.is_empty() { "make -j8".into() } else { s.build_cmd };
         self.proto_port = s.proto_port;
         self.log_port = s.log_port;
+    }
+
+    /// Put the active project on top of the recent list.
+    pub fn touch_project(&mut self) {
+        if self.project_dir.is_empty() {
+            return;
+        }
+        self.recent.retain(|r| r.dir != self.project_dir);
+        self.recent.insert(
+            0,
+            Recent { dir: self.project_dir.clone(), board: self.board, build_cmd: self.build_cmd.clone(), used: now_secs() },
+        );
+        self.recent.truncate(RECENT_MAX);
+    }
+
+    /// Make `dir` the active project. Its board is found by the linker
+    /// script; returns true when that switched the board (then the caller
+    /// reloads the SVD and closes the links). Err when `dir` is no project.
+    pub fn use_project(&mut self, dir: &str) -> Result<bool, String> {
+        let p = Path::new(dir);
+        let board = board_of(p).ok_or_else(|| {
+            let ld: Vec<&str> = BoardId::ALL.iter().map(|b| b.profile().marker).collect();
+            format!("{dir}: не проект прошивки (нужны Core/ и {})", ld.join(" или "))
+        })?;
+        let dir = p.canonicalize().map(|c| c.to_string_lossy().into_owned()).unwrap_or_else(|_| dir.to_string());
+        let switched = board != self.board;
+        self.touch_project();
+        if switched {
+            self.switch_board(board);
+        }
+        let cmd = self.recent.iter().find(|r| r.dir == dir).map(|r| r.build_cmd.clone());
+        self.project_dir = dir;
+        self.build_cmd = build_cmd_for(Path::new(&self.project_dir), &cmd.unwrap_or_else(|| self.build_cmd.clone()));
+        self.touch_project();
+        Ok(switched)
+    }
+
+    pub fn add_run(&mut self, r: Run) {
+        self.history.push(r);
+        let n = self.history.len();
+        if n > HISTORY_MAX {
+            self.history.drain(..n - HISTORY_MAX);
+        }
     }
 
     /// Editor CLI to call on a stop, or `None` when following is off or no editor is found.
@@ -140,6 +221,37 @@ pub fn find_cursor() -> Option<String> {
 /// The firmware repo of `board`: has Core/ and the board's linker script.
 fn is_project_of(dir: &Path, board: BoardId) -> bool {
     dir.join("Core").is_dir() && dir.join(board.profile().marker).is_file()
+}
+
+/// Board of a firmware project folder, by its linker script.
+pub fn board_of(dir: &Path) -> Option<BoardId> {
+    BoardId::ALL.into_iter().find(|b| is_project_of(dir, *b))
+}
+
+/// Firmware projects of every board next to `near` and in ~/Project/ProjectSTM.
+pub fn find_projects(near: &str) -> Vec<(String, BoardId)> {
+    let mut roots: Vec<PathBuf> = vec![];
+    roots.extend(Path::new(near).parent().map(Path::to_path_buf));
+    let own = default_project_dir();
+    roots.extend(Path::new(&own).parent().map(Path::to_path_buf));
+    if let Some(h) = dirs::home_dir() {
+        roots.push(h.join("Project").join("ProjectSTM"));
+    }
+    let mut out: Vec<(String, BoardId)> = vec![];
+    for r in roots {
+        let Ok(rd) = std::fs::read_dir(&r) else { continue };
+        for e in rd.flatten() {
+            let p = e.path().canonicalize().unwrap_or_else(|_| e.path());
+            if let Some(b) = board_of(&p) {
+                let d = p.to_string_lossy().into_owned();
+                if !out.iter().any(|(x, _)| *x == d) {
+                    out.push((d, b));
+                }
+            }
+        }
+    }
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    out
 }
 
 /// Firmware project of `board`: the studio's own repo, a sibling of `near`
@@ -254,6 +366,17 @@ impl Config {
             }
         }
         c.build_cmd = build_cmd_for(std::path::Path::new(&c.project_dir), &c.build_cmd);
+        if c.recent.is_empty() {
+            // first start with the project list: the other boards' projects, then this one on top
+            for (key, s) in &c.slots {
+                if let Some(b) = BoardId::ALL.into_iter().find(|b| b.key() == key) {
+                    if is_project_of(Path::new(&s.project_dir), b) {
+                        c.recent.push(Recent { dir: s.project_dir.clone(), board: b, build_cmd: s.build_cmd.clone(), used: 0 });
+                    }
+                }
+            }
+            c.touch_project();
+        }
         c
     }
     pub fn save(&self) {
@@ -275,6 +398,33 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn projects_switch_board_and_keep_recent() {
+        let root = std::env::temp_dir().join(format!("pill-proj-{}", std::process::id()));
+        let mk = |name: &str, b: BoardId| {
+            let d = root.join(name);
+            std::fs::create_dir_all(d.join("Core")).unwrap();
+            std::fs::write(d.join(b.profile().marker), "").unwrap();
+            d.canonicalize().unwrap().to_string_lossy().into_owned()
+        };
+        let a = mk("a", BoardId::BluePill);
+        let b = mk("b", BoardId::BlackPill);
+        let mut c = Config { project_dir: a.clone(), ..Default::default() };
+        assert_eq!(c.use_project(&b), Ok(true));
+        assert_eq!((c.board, c.project_dir.as_str()), (BoardId::BlackPill, b.as_str()));
+        assert_eq!(c.use_project(&a), Ok(true));
+        assert_eq!(c.recent.iter().map(|r| r.dir.as_str()).collect::<Vec<_>>(), [a.as_str(), b.as_str()]);
+        assert!(c.use_project(root.to_str().unwrap()).is_err());
+        assert!(find_projects(&a).iter().any(|(d, x)| *d == b && *x == BoardId::BlackPill));
+        for i in 0..70 {
+            c.add_run(Run { t: i, dir: a.clone(), board: c.board, what: "Сборка".into(), ok: true, secs: 1.0, git: String::new() });
+        }
+        assert_eq!(c.history.len(), HISTORY_MAX);
+        assert_eq!(c.history.last().unwrap().t, 69);
+        let _ = std::fs::remove_dir_all(&root);
+        boards::set(BoardId::BluePill);
+    }
 
     #[test]
     fn find_tool_keeps_paths_and_resolves_names() {

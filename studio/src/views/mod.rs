@@ -8,3 +8,4 @@ pub mod proto_view;
 pub mod regs;
 pub mod rtos;
 pub mod settings;
+pub mod swd_help;

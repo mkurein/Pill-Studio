@@ -1,8 +1,10 @@
 //! SWD debugging: a halted-core view (disassembly, registers, call stack,
-//! breakpoints), fault analysis from g_diag, symbols, build / flash / hil.py,
-//! OpenOCD console.
+//! breakpoints), fault analysis from g_diag, symbols, the active firmware
+//! project with build / flash / hil.py and their history, OpenOCD console.
 
-use crate::app::Shared;
+use crate::app::{Act, Shared};
+use crate::core::boards::BoardId;
+use crate::core::config::{self, Config};
 use crate::core::debug::{self, StepKind};
 use crate::core::elf;
 use crate::core::openocd::cfsr_ru;
@@ -32,6 +34,12 @@ pub struct St {
     src_line: u32,
     src_lines: Vec<String>,
     src_scroll: bool,
+    /// Folder typed in the project picker.
+    proj_path: String,
+    /// History of every project, not only the active one.
+    hist_all: bool,
+    /// "What is SWD" window is open.
+    help: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
@@ -43,6 +51,19 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             "SWD-отладка",
             "Шаг идёт по строкам исходника. F5 продолжить, F6 пауза, F10 следующая строка, F11 зайти в функцию, Shift+F11 выйти, F9 точка, Shift+F5 отключить.",
         );
+        let label = if st.help { "✕ Скрыть описание SWD" } else { "ℹ Что такое SWD и как это работает" };
+        if ui
+            .button(label)
+            .on_hover_text("провода, протокол, отладочные блоки ядра, цепочка Pill Studio → OpenOCD → ST-Link → чип, что делать, если плата не видна")
+            .clicked()
+        {
+            st.help = !st.help;
+        }
+        if st.help {
+            ui.add_space(6.0);
+            card(ui, &p, "Что такое SWD и как это работает", |ui| super::swd_help::body(ui, &p));
+            ui.add_space(8.0);
+        }
         if st.seen != sh.st.regs {
             if !st.seen.is_empty() {
                 st.prev.clone_from(&st.seen);
@@ -118,6 +139,8 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 }
             }
         }
+        project_card(ui, sh, st);
+        ui.add_space(8.0);
         card(ui, &p, "", |ui| {
             ui.horizontal_wrapped(|ui| {
                 if sh.swd_ok() {
@@ -455,55 +478,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     });
                 }
             });
-            card(&mut cols[1], &p, "Сборка · прошивка · автотест", |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    let idle = sh.st.job.is_none();
-                    if ui.add_enabled(idle, egui::Button::new("🔨 Собрать")).on_hover_text(&sh.cfg.build_cmd).clicked() {
-                        sh.job(Job::Build(sh.cfg.clone()));
-                    }
-                    if ui.add_enabled(idle, egui::Button::new("⚡ Прошить")).on_hover_text("OpenOCD: program … verify reset").clicked() {
-                        sh.job(Job::Flash(sh.cfg.clone()));
-                    }
-                    if ui.add_enabled(idle, egui::Button::new("✔ Автотест hil.py")).on_hover_text("tools/hil.py test: сборка, прошивка и ~30 проверок на плате; порты освобождаются").clicked() {
-                        sh.job(Job::HilTest(sh.cfg.clone()));
-                    }
-                });
-                if let Some(e) = &sh.st.elf {
-                    hint(ui, &p, &format!("ELF: {}", e.path.display()));
-                }
-                match (sh.st.job.as_deref(), sh.st.job_ok) {
-                    (Some(j), _) => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(j);
-                        });
-                    }
-                    (None, Some(true)) => {
-                        ui.label(RichText::new("✓ успешно").color(p.ok));
-                    }
-                    (None, Some(false)) => {
-                        ui.label(RichText::new("✗ ошибка").color(p.err));
-                    }
-                    _ => {}
-                }
-                if sh.st.job_out.is_empty() {
-                    return; // no output yet: no empty box
-                }
-                egui::Frame::new().fill(p.panel2).corner_radius(6).inner_margin(6).show(ui, |ui| {
-                    egui::ScrollArea::vertical().id_salt("jobout").max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
-                        for l in &sh.st.job_out {
-                            let c = if l.contains("FAIL") || l.contains("error") || l.contains("Error") {
-                                p.err
-                            } else if l.contains("PASS") || l.contains("[  ok ]") {
-                                p.ok
-                            } else {
-                                p.fg2
-                            };
-                            ui.label(RichText::new(l).monospace().small().color(c));
-                        }
-                    });
-                });
-            });
+            card(&mut cols[1], &p, "История сборок, прошивок и автотестов", |ui| history(ui, sh, st));
         });
         ui.add_space(8.0);
         card(ui, &p, "Консоль OpenOCD (команды TCL)", |ui| {
@@ -520,6 +495,191 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     ui.label(RichText::new(l).monospace().small().color(p.fg2));
                 }
             });
+        });
+    });
+}
+
+fn short_name(dir: &str) -> String {
+    std::path::Path::new(dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.to_string())
+}
+
+fn board_name(b: BoardId) -> &'static str {
+    b.profile().board
+}
+
+/// "только что", "12 мин", "3 ч", "2 дн".
+fn ago(t: u64) -> String {
+    if t == 0 {
+        return String::new();
+    }
+    let d = config::now_secs().saturating_sub(t);
+    match d {
+        0..=59 => "только что".into(),
+        60..=3599 => format!("{} мин назад", d / 60),
+        3600..=86_399 => format!("{} ч назад", d / 3600),
+        _ => format!("{} дн назад", d / 86_400),
+    }
+}
+
+/// Active firmware project (any board, recent list, found nearby, any
+/// folder), its git state, whether the ELF is older than the sources, and
+/// build / flash / build+flash / autotest.
+fn project_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
+    let p = sh.pal;
+    let cfg: &Config = &sh.cfg;
+    card(ui, &p, "Проект · сборка · прошивка · автотест", |ui| {
+        let idle = sh.st.job.is_none();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Проект:");
+            let cur = if cfg.project_dir.is_empty() { "не выбран".to_string() } else { format!("{} · {}", short_name(&cfg.project_dir), board_name(cfg.board)) };
+            egui::ComboBox::from_id_salt("project_pick")
+                .width(320.0)
+                .selected_text(RichText::new(cur).strong())
+                .show_ui(ui, |ui| {
+                    ui.label(RichText::new("Недавние").small().color(p.muted));
+                    for r in &cfg.recent {
+                        let text = format!("{}   {} · {}", short_name(&r.dir), board_name(r.board), ago(r.used));
+                        if ui.add_enabled(idle, egui::Button::selectable(r.dir == cfg.project_dir, text)).on_hover_text(&r.dir).clicked() && r.dir != cfg.project_dir {
+                            sh.act(Act::Project(r.dir.clone()));
+                        }
+                    }
+                    let found: Vec<(String, BoardId)> =
+                        config::find_projects(&cfg.project_dir).into_iter().filter(|(d, _)| !cfg.recent.iter().any(|r| r.dir == *d)).collect();
+                    if !found.is_empty() {
+                        ui.separator();
+                        ui.label(RichText::new("Найдены рядом").small().color(p.muted));
+                        for (d, b) in found {
+                            if ui.add_enabled(idle, egui::Button::selectable(false, format!("{}   {}", short_name(&d), board_name(b)))).on_hover_text(&d).clicked() {
+                                sh.act(Act::Project(d));
+                            }
+                        }
+                    }
+                });
+            ui.add(egui::TextEdit::singleline(&mut st.proj_path).hint_text("другая папка проекта…").desired_width(280.0));
+            if ui.add_enabled(idle && !st.proj_path.trim().is_empty(), egui::Button::new("Открыть")).on_hover_text("папка с Core/ и линкер-скриптом платы; плата выбирается сама").clicked() {
+                sh.act(Act::Project(st.proj_path.trim().to_string()));
+                st.proj_path.clear();
+            }
+        });
+        if !cfg.project_dir.is_empty() {
+            ui.label(RichText::new(&cfg.project_dir).small().monospace().color(p.muted));
+        }
+        ui.horizontal_wrapped(|ui| {
+            if !sh.st.git.is_empty() {
+                let dirty = sh.st.git.ends_with("+изм.");
+                ui.label(RichText::new(format!("git: {}", sh.st.git)).small().color(if dirty { p.warn } else { p.fg2 }))
+                    .on_hover_text(if dirty { "есть незакоммиченные изменения: в историю запишется этот же хеш с пометкой +изм." } else { "рабочая копия совпадает с коммитом" });
+            }
+            match (&sh.st.elf, sh.st.elf_mtime) {
+                (Some(e), Some(t)) => {
+                    ui.label(RichText::new(format!("ELF {} собран {}", e.path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), ago(t))).small().color(p.fg2))
+                        .on_hover_text(e.path.display().to_string());
+                }
+                (Some(e), None) => {
+                    ui.label(RichText::new(format!("ELF: {}", e.path.display())).small().color(p.fg2));
+                }
+                (None, _) => {
+                    ui.label(RichText::new("ELF нет — соберите прошивку").small().color(p.warn));
+                }
+            }
+        });
+        if let (Some(src), Some(elf)) = (sh.st.src_mtime, sh.st.elf_mtime) {
+            if src > elf {
+                ui.label(
+                    RichText::new(format!("Исходники изменены {} — после последней сборки. Нажмите «Собрать и прошить».", ago(src)))
+                        .color(p.warn),
+                );
+            }
+        }
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui.add_enabled(idle, egui::Button::new("🔨 Собрать")).on_hover_text(&cfg.build_cmd).clicked() {
+                sh.job(Job::Build(cfg.clone()));
+            }
+            if ui.add_enabled(idle, egui::Button::new("⚡ Прошить")).on_hover_text("OpenOCD: program … verify reset — загруженный ELF").clicked() {
+                sh.job(Job::Flash(cfg.clone()));
+            }
+            if ui.add_enabled(idle, egui::Button::new("🔨⚡ Собрать и прошить")).on_hover_text("сборка, и если она успешна — сразу прошивка свежего ELF").clicked() {
+                sh.job(Job::BuildFlash(cfg.clone()));
+            }
+            if ui.add_enabled(idle, egui::Button::new("✔ Автотест hil.py")).on_hover_text("tools/hil.py test: сборка, прошивка и ~30 проверок на плате; порты освобождаются").clicked() {
+                sh.job(Job::HilTest(cfg.clone()));
+            }
+            ui.label(RichText::new(format!("сборка: {}", cfg.build_cmd)).small().monospace().color(p.muted));
+        });
+            match (sh.st.job.as_deref(), sh.st.job_ok) {
+                (Some(j), _) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(j);
+                    });
+                }
+                (None, Some(true)) => {
+                    ui.label(RichText::new("✓ успешно").color(p.ok));
+                }
+                (None, Some(false)) => {
+                    ui.label(RichText::new("✗ ошибка").color(p.err));
+                }
+                _ => {}
+            }
+            if sh.st.job_out.is_empty() {
+                return; // no output yet: no empty box
+            }
+            egui::Frame::new().fill(p.panel2).corner_radius(6).inner_margin(6).show(ui, |ui| {
+                egui::ScrollArea::vertical().id_salt("jobout").max_height(220.0).stick_to_bottom(true).show(ui, |ui| {
+                    for l in &sh.st.job_out {
+                        let c = if l.contains("FAIL") || l.contains("error") || l.contains("Error") {
+                            p.err
+                        } else if l.contains("PASS") || l.contains("[  ok ]") {
+                            p.ok
+                        } else {
+                            p.fg2
+                        };
+                        ui.label(RichText::new(l).monospace().small().color(c));
+                    }
+                });
+            });
+    });
+}
+
+/// Saved runs: when, which project, what, result, how long, git state.
+fn history(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
+    let p = sh.pal;
+    let cfg = &sh.cfg;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut st.hist_all, "все проекты");
+        if !cfg.history.is_empty() && ui.small_button("Очистить").clicked() {
+            let mut c = cfg.clone();
+            c.history.clear();
+            sh.act(Act::SaveCfg(Box::new(c)));
+        }
+    });
+    let rows: Vec<&config::Run> = cfg.history.iter().rev().filter(|r| st.hist_all || r.dir == cfg.project_dir).take(20).collect();
+    if rows.is_empty() {
+        hint(ui, &p, "Здесь появятся сборки, прошивки и автотесты: когда, какой проект, результат и коммит.");
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt("hist").max_height(240.0).show(ui, |ui| {
+        egui::Grid::new("hist_grid").num_columns(5).striped(true).spacing([10.0, 3.0]).show(ui, |ui| {
+            for r in rows {
+                ui.label(RichText::new(ago(r.t)).small().color(p.muted));
+                if st.hist_all {
+                    let name = format!("{} · {}", short_name(&r.dir), board_name(r.board));
+                    if r.dir != cfg.project_dir {
+                        if ui.small_button(name).on_hover_text(format!("{}\nсделать активным", r.dir)).clicked() {
+                            sh.act(Act::Project(r.dir.clone()));
+                        }
+                    } else {
+                        ui.label(RichText::new(name).small());
+                    }
+                } else {
+                    ui.label("");
+                }
+                ui.label(RichText::new(&r.what).small());
+                ui.label(RichText::new(if r.ok { "✓" } else { "✗" }).color(if r.ok { p.ok } else { p.err }).strong());
+                ui.label(RichText::new(format!("{:.1} с  {}", r.secs, r.git)).small().monospace().color(p.fg2));
+                ui.end_row();
+            }
         });
     });
 }

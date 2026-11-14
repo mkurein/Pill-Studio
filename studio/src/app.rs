@@ -50,6 +50,9 @@ pub enum Act {
     SaveCfg(Box<Config>),
     /// Switch the studio to another board (profile, SVD, project, ports).
     Board(BoardId),
+    /// Make this firmware folder the active project; switches the board when
+    /// the folder belongs to the other one.
+    Project(String),
     RefreshPorts,
     Theme(bool),
     OpenPeriph(String),
@@ -187,6 +190,12 @@ impl App {
         for (tone, text) in u.toasts {
             self.toast(tone, text);
         }
+        if !u.runs.is_empty() {
+            for r in u.runs {
+                self.sh.cfg.add_run(r);
+            }
+            self.sh.cfg.save();
+        }
         let busy = self.worker.busy() || self.sh.st.job.is_some();
         self.busy_since = match (busy, self.busy_since) {
             (true, None) => Some(Instant::now()),
@@ -204,6 +213,21 @@ impl App {
         }
     }
 
+    /// The board changed in the config: its SVD, links closed, views reset.
+    fn board_changed(&mut self) {
+        let svd = Arc::new(svd::parse_board(boards::cur()));
+        self.sh.svd = svd.clone();
+        self.worker.send(Job::Board(svd, self.sh.cfg.project_dir.clone()));
+        self.vs = ViewState::default();
+        self.sh.txns.clear();
+        self.sh.lines.clear();
+        self.sh.samples.clear();
+        self.sh.st = State::default();
+        let b = boards::cur();
+        let proj = if self.sh.cfg.project_dir.is_empty() { "не найден — укажите в Настройках".to_string() } else { self.sh.cfg.project_dir.clone() };
+        self.toast(Tone::Info, format!("Плата: {} ({}). Проект: {}", b.board, b.chip, proj));
+    }
+
     fn run(&mut self, ctx: &egui::Context, a: Act) {
         match a {
             Act::Job(j) => self.worker.send(*j),
@@ -216,26 +240,35 @@ impl App {
                 if c.editor() != self.sh.cfg.editor() {
                     self.worker.send(Job::Editor(c.editor()));
                 }
+                let project = c.project_dir != self.sh.cfg.project_dir;
                 self.sh.cfg = *c;
+                if project {
+                    self.sh.cfg.touch_project();
+                    self.worker.send(Job::Project(self.sh.cfg.project_dir.clone()));
+                }
                 self.sh.cfg.save();
             }
+            Act::Project(dir) => match self.sh.cfg.use_project(&dir) {
+                Err(e) => self.toast(Tone::Err, e),
+                Ok(true) => {
+                    self.sh.cfg.save();
+                    self.board_changed();
+                }
+                Ok(false) => {
+                    self.sh.cfg.save();
+                    self.worker.send(Job::Project(self.sh.cfg.project_dir.clone()));
+                    self.toast(Tone::Info, format!("Проект: {}", self.sh.cfg.project_dir));
+                }
+            },
             Act::Board(id) => {
                 if id == self.sh.cfg.board {
                     return;
                 }
+                self.sh.cfg.touch_project();
                 self.sh.cfg.switch_board(id);
+                self.sh.cfg.touch_project();
                 self.sh.cfg.save();
-                let svd = Arc::new(svd::parse_board(boards::cur()));
-                self.sh.svd = svd.clone();
-                self.worker.send(Job::Board(svd, self.sh.cfg.project_dir.clone()));
-                self.vs = ViewState::default();
-                self.sh.txns.clear();
-                self.sh.lines.clear();
-                self.sh.samples.clear();
-                self.sh.st = State::default();
-                let b = boards::cur();
-                let proj = if self.sh.cfg.project_dir.is_empty() { "не найден — укажите в Настройках".to_string() } else { self.sh.cfg.project_dir.clone() };
-                self.toast(Tone::Info, format!("Плата: {} ({}). Проект: {}", b.board, b.chip, proj));
+                self.board_changed();
             }
             Act::RefreshPorts => self.sh.ports = link::list_ports(),
             Act::Theme(dark) => {

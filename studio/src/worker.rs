@@ -157,6 +157,11 @@ pub struct State {
     pub boot_note: String,
     /// Flash of the connected board compared with the loaded ELF.
     pub flash_check: Option<FlashCheck>,
+    /// Last TASKS reply and the one before it (CPU share = their difference).
+    pub tasks: Option<Tasks>,
+    pub tasks_prev: Option<Tasks>,
+    /// The firmware answered UNKNOWN_CMD to TASKS: it is older than the command.
+    pub tasks_missing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -453,6 +458,10 @@ impl Eng {
         } else if self.st.polling && self.proto.is_some() && self.last_poll.elapsed() >= Duration::from_millis(self.st.poll_ms) {
             self.last_poll = Instant::now();
             self.transact(vec![CMD_STATUS], false, true);
+            if !self.st.tasks_missing && self.proto.is_some() {
+                let r = self.transact(vec![CMD_TASKS], false, true);
+                self.st.tasks_missing = r.is_some_and(|r| r.status == ST_UNKNOWN_CMD);
+            }
         }
         // SWD liveness
         let mut dead = false;
@@ -887,6 +896,14 @@ impl Eng {
                     self.out.samples.push(Sample { t, st: s });
                 }
             }
+            Some(CMD_TASKS) => {
+                if let Some(t) = Tasks::decode(&r.payload) {
+                    // a reboot restarts the counters: the old sample is no base for a share
+                    let rebooted = self.st.tasks.as_ref().is_some_and(|o| t.run_us < o.run_us && o.run_us < 0xF000_0000);
+                    self.st.tasks_prev = if rebooted { None } else { self.st.tasks.take() };
+                    self.st.tasks = Some(t);
+                }
+            }
             Some(CMD_RESET) => {
                 self.st.fw = None;
             }
@@ -1209,6 +1226,9 @@ impl Eng {
                     self.proto = Some(Proto::Serial(p));
                     self.st.proto = Some(name.clone());
                     self.st.fw = None;
+                    self.st.tasks = None;
+                    self.st.tasks_prev = None;
+                    self.st.tasks_missing = false;
                     let r = self.transact(vec![CMD_PING], false, false);
                     match r {
                         Some(_) => {
@@ -1227,12 +1247,16 @@ impl Eng {
             Job::ProtoSim => {
                 self.proto = Some(Proto::Sim);
                 self.st.proto = Some("виртуальная плата".into());
+                self.st.tasks_missing = false;
                 self.transact(vec![CMD_PING], false, false);
                 self.st.polling = true;
                 self.transact(vec![CMD_STATUS], false, false);
                 self.toast(Tone::Info, "UART1 → виртуальная плата");
             }
             Job::ProtoClose => {
+                self.st.tasks = None;
+                self.st.tasks_prev = None;
+                self.st.tasks_missing = false;
                 self.proto = None;
                 self.st.proto = None;
                 self.st.polling = false;

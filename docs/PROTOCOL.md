@@ -46,16 +46,35 @@ ID_BU (0x01) | STATUS | PAYLOAD... | CRC_L | CRC_H
 | | 0x01 | probe: WREN → SR.WEL=1, WRDI → WEL=0 | SR после WREN, SR после WRDI |
 | | 0x02 | 64 B pattern @ 0x7F00, verify, restore | mismatches, first idx, expected, got |
 | 0x03 STATUS | — | — | 56 B `status_reply_t` (LE), см. ниже |
+| 0x04 TASKS | — | — | задачи FreeRTOS, см. ниже |
 | 0x0F RESET | — | ответ, затем `NVIC_SystemReset()` | — |
 | 0x70 LED | 0x00 | PC13 = SET (LED off, active-low), ручной режим | — |
 | | 0x01 | PC13 = RESET (LED on), ручной режим | — |
 | | 0x02 | авто-мигание `LedTask` (ADR-011) | — |
 | 0x71 LED_GET | — | — | ODR PC13 (0/1), mode (1 = ручной) |
+| 0x7F FAULT | 0x00 | стереть запись о сбое и `wdg_missing` | — |
+| | 0x01 | ответ, затем задача UART останавливается — сторож перезапускает плату | — |
+| | 0x02 | ответ, затем `configASSERT(0)` | — |
+| | 0x03 | ответ, затем запись по адресу 0xFFFFFFF0 (HardFault) | — |
+| | 0x04 | программное прерывание PVD, как при просадке; сброса нет | — |
 
 `status_reply_t`: `uptime_ms, reset_cause(RCC_CSR), boot_count, heartbeat,
 heap_free, heap_min` (u32) · `stack_free default/led/uart` (u16, байты) ·
 `rx_frames, rx_crc_err, uart_err, queue_full, fram_ok, fram_fail` (u32) ·
 `led_odr, led_manual` (u8).
+
+TASKS: `run_us` (u32, общее время, мкс) · `count` (u8, не больше 5) · `count` записей по 16 B:
+`name[8]` (обрезано, без `\0` при 8 символах) · `state` (u8: 0 running, 1 ready, 2 blocked,
+3 suspended, 4 deleted) · `prio` (u8) · `stack_free` (u16, байты, минимум за всё время) ·
+`run_us` (u32, время задачи, мкс). Счётчики времени переполняются через ~71 мин —
+доля процессора считается по разнице двух ответов. Прошивка до этой команды отвечает UNKNOWN_CMD.
+
+`g_diag` (по SWD, 33 слова, `DIAG_MAGIC` 0xD1A60004): к прежним 24 словам добавлены
+`fault_line` (строка сработавшего `configASSERT`, имя файла — в `fault_task`),
+`rst_soft, rst_pin, rst_power, rst_wdg` (сбросы по причинам с подачи питания) и
+`queue_peak` (максимум байт в `uartQueue` за загрузку), `wdg_missing` (маска задач, переставших
+отмечаться: 1 defaultTask, 2 LedTask, 4 Uart1Task), `pvd_count`, `pvd_ms` (просадки ниже 2.9 В).
+Запись о сбое хранится до команды FAULT 0 или потери питания; `PREV_FAULT` печатается при каждом старте.
 
 ## Examples (hex)
 

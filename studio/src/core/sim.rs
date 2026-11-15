@@ -247,6 +247,34 @@ impl SimBoard {
                 self.heap_used_peak = self.heap_used_peak.max(16);
                 Self::reply(ST_OK, &self.status().encode())
             }
+            CMD_TASKS => {
+                // mostly idle; the UART task's share grows with the frames it handled
+                let up = self.uptime_ms().wrapping_mul(1000);
+                let uart = self.rx_frames.wrapping_mul(180);
+                let t = |name: &str, state, prio, free, run| TaskInfo { name: name.into(), state, prio, stack_free: free, run_us: run };
+                let tasks = Tasks {
+                    run_us: up,
+                    tasks: vec![
+                        t("Uart1Tas", 0, 24, (1_404 - self.rx_frames.min(40) * 2) as u16, uart),
+                        t("IDLE", 1, 0, 300, up.wrapping_sub(uart).wrapping_sub(up / 200)),
+                        t("defaultT", 2, 24, 612, up / 400),
+                        t("LedTask", 2, 8, 388, up / 400),
+                        t("Tmr Svc", 2, 2, 800, 0),
+                    ],
+                };
+                Self::reply(ST_OK, &tasks.encode())
+            }
+            CMD_FAULT => match body.get(1).copied() {
+                Some(0 | 4) => Self::reply(ST_OK, &[]),
+                Some(what @ 1..=3) => {
+                    // the watchdog brings the board back; here at once
+                    self.reset_cause = 1 << 29 | 1 << 26;
+                    self.pending_log.push(format!("TEST fault={what}"));
+                    self.boot();
+                    Self::reply(ST_OK, &[])
+                }
+                _ => Self::reply(ST_BAD_ARG, &[]),
+            },
             CMD_RESET => {
                 self.reset_cause = 1 << 28;
                 self.pending_log.push("RESET by command".into());
@@ -361,6 +389,16 @@ impl SimBoard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tasks_reply_decodes() {
+        let mut b = SimBoard::new();
+        let r = b.xfer(&frame(&[CMD_TASKS]));
+        let t = Tasks::decode(&r[2..r.len() - 2]).unwrap();
+        assert_eq!(t.tasks.len(), 5);
+        assert!(t.tasks.iter().any(|x| x.name == "IDLE"));
+        assert!(r.len() <= UART_BUF_SIZE);
+    }
 
     #[test]
     fn reliability_cases_on_the_virtual_board() {

@@ -102,6 +102,7 @@ static volatile uint8_t led_manual = 0;   // 1: LED driven by CMD_LED, 0: LedTas
 void LedTask(void *pvParameters) {
     (void)pvParameters;
     while (1) {
+        diag_wdg_alive(DIAG_WDG_LED);
         if (!led_manual) {
             HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
         }
@@ -260,12 +261,52 @@ static void handle_frame(const uint8_t *cmd, uint16_t len)
         break;
     }
 
+    case CMD_TASKS: {
+        /* run_time_us u32, count u8, then per task: name[8], state, priority,
+         * stack_free u16 (bytes), run_time_us u32. At most 5 tasks fit a frame. */
+        static TaskStatus_t ts[8];
+        uint32_t total = 0;
+        UBaseType_t n = uxTaskGetSystemState(ts, 8, &total);
+        if (n > 5) n = 5;
+        memcpy(payload, &total, 4);
+        payload[4] = (uint8_t)n;
+        plen = 5;
+        for (UBaseType_t i = 0; i < n; i++) {
+            uint8_t *r = payload + plen;
+            size_t nl = strlen(ts[i].pcTaskName);
+            uint16_t free_b = (uint16_t)(ts[i].usStackHighWaterMark * sizeof(StackType_t));
+            memset(r, 0, 16);
+            memcpy(r, ts[i].pcTaskName, nl > 8 ? 8 : nl);
+            r[8] = (uint8_t)ts[i].eCurrentState;
+            r[9] = (uint8_t)ts[i].uxCurrentPriority;
+            memcpy(r + 10, &free_b, 2);
+            memcpy(r + 12, &ts[i].ulRunTimeCounter, 4);
+            plen += 16;
+        }
+        break;
+    }
+
     case CMD_RESET:
         send_reply(ST_OK, NULL, 0);
         log_printf("RESET by command\r\n");
         vTaskDelay(pdMS_TO_TICKS(20));
         NVIC_SystemReset();
         break;
+
+    case CMD_FAULT: {
+        /* Fault injection for tests: the reply goes out first. */
+        uint8_t what = nargs ? cmd[1] : 0xFF;
+        if (what > 4) { status = ST_BAD_ARG; break; }
+        if (what == 0) { diag_fault_clear(); break; }
+        if (what == 4) { EXTI->SWIER |= 1u << 16; break; }   /* as if VDD dipped */
+        send_reply(ST_OK, NULL, 0);
+        log_printf("TEST fault=%u\r\n", what);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        if (what == 1) vTaskSuspend(NULL);          /* stops checking in: watchdog resets */
+        if (what == 2) configASSERT(what == 0);
+        if (what == 3) *(volatile uint32_t *)0xFFFFFFF0u = 0;
+        return;
+    }
 
     default:
         status = ST_UNKNOWN_CMD;
@@ -287,8 +328,11 @@ void Uart1Task(void *pvParameters) {
          * UART_TIMEOUT_MS for the next byte; a longer gap ends the frame.
          * The whole queue is drained without extra delays, so long frames
          * are not split (old code took 1 byte per 3 ms and cut frames > ~7 bytes). */
-        TickType_t wait = index ? pdMS_TO_TICKS(UART_TIMEOUT_MS) : portMAX_DELAY;
+        TickType_t wait = index ? pdMS_TO_TICKS(UART_TIMEOUT_MS) : pdMS_TO_TICKS(500);
+        diag_wdg_alive(DIAG_WDG_UART);     /* at least twice a second, also with a quiet line */
         if (xQueueReceive(uartQueue, &ch, wait) == pdPASS) {
+            uint32_t waiting = (uint32_t)uxQueueMessagesWaiting(uartQueue) + 1u;
+            if (waiting > g_diag.queue_peak) g_diag.queue_peak = waiting;
             if (index < UART_BUF_SIZE) command[index++] = ch;
             else overflow = true;
             continue;
@@ -354,7 +398,7 @@ int main(void)
     log_printf("PREV_FAULT code=%lu pc=0x%08lX lr=0x%08lX cfsr=0x%08lX task=%s\r\n",
                g_diag.error_code, g_diag.fault_pc, g_diag.fault_lr,
                g_diag.fault_cfsr, (const char *)g_diag.fault_task);
-    g_diag.fault_magic = 0;   // reported once
+    /* kept until CMD_FAULT 0: the watchdog restarts the board, the record must outlive that */
   }
 
   fram_cfg_setup(&cfgFRAM);
@@ -395,6 +439,8 @@ int main(void)
   }
   log_init();
   uart1_start_rx();   // RX interrupt only after the queue exists
+  diag_pvd_start();
+  diag_wdg_start();   // from here the tasks must keep checking in
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -636,6 +682,7 @@ void StartDefaultTask(void *argument)
   for (;;) {
 	vTaskDelay(pdMS_TO_TICKS(1000));
 	g_diag.heartbeat++;
+	diag_wdg_supervise();
 	log_printf("Tick:%lu\r\n", HAL_GetTick());
 
 	/* Lightweight runtime diagnostics every 5 seconds (one parsable line). */

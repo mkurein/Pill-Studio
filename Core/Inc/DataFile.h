@@ -18,8 +18,10 @@
 #define CMD_PING        0x01   // -> payload: firmware version (ASCII)
 #define CMD_FRAM        0x02   // arg 0: write/read "KUREIN" @0x0150, 1: probe, 2: pattern test
 #define CMD_STATUS      0x03   // -> payload: status_reply_t (little-endian)
+#define CMD_TASKS       0x04   // -> payload: run time u32, count u8, count x 16-byte task records
 #define CMD_RESET       0x0F   // reply, then NVIC_SystemReset()
 #define CMD_LED         0x70   // arg 0: LED off, 1: LED on, 2: auto-blink
+#define CMD_FAULT       0x7F   // test: 0 clear fault record, 1 stall this task, 2 assert, 3 HardFault, 4 fake PVD
 #define CMD_LED_GET     0x71   // -> payload: [ODR PC13, mode(0 auto/1 manual)]
 
 #define ST_OK           0x00

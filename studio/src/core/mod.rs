@@ -40,17 +40,33 @@ pub struct Diag {
     pub last_cmd: u32,
     pub fram_ok: u32,
     pub fram_fail: u32,
+    /// Source line of a failed configASSERT (file name is in `fault_task`).
+    pub fault_line: u32,
+    pub rst_soft: u32,
+    pub rst_pin: u32,
+    pub rst_power: u32,
+    pub rst_wdg: u32,
+    pub queue_peak: u32,
+    /// Tasks that stopped checking in before a watchdog reset: 1 default, 2 LED, 4 UART.
+    pub wdg_missing: u32,
+    /// Supply dips below 2.9 V since power-on, and the HAL tick of the last one.
+    pub pvd_count: u32,
+    pub pvd_ms: u32,
 }
 
-pub const DIAG_MAGIC: u32 = 0xD1A6_0002;
+pub const DIAG_MAGIC: u32 = 0xD1A6_0004;
+/// Firmware before the reset counters: the first 24 words are the same.
+pub const DIAG_MAGIC_V2: u32 = 0xD1A6_0002;
 pub const DIAG_FAULT_MAGIC: u32 = 0x0FA0_17ED;
-pub const DIAG_WORDS: u32 = 24;
+pub const DIAG_WORDS: u32 = 33;
 
 impl Diag {
     pub fn from_words(w: &[u32]) -> Option<Diag> {
-        if w.len() < DIAG_WORDS as usize {
+        if w.len() < 24 {
             return None;
         }
+        // words 24.. exist only in the v3 record
+        let x = |i: usize| if w[0] == DIAG_MAGIC { w.get(i).copied().unwrap_or(0) } else { 0 };
         let task: Vec<u8> = w[12..16].iter().flat_map(|x| x.to_le_bytes()).collect();
         let task = String::from_utf8_lossy(task.split(|&b| b == 0).next().unwrap_or(&[])).to_string();
         Some(Diag {
@@ -75,10 +91,32 @@ impl Diag {
             last_cmd: w[21],
             fram_ok: w[22],
             fram_fail: w[23],
+            fault_line: x(24),
+            rst_soft: x(25),
+            rst_pin: x(26),
+            rst_power: x(27),
+            rst_wdg: x(28),
+            queue_peak: x(29),
+            wdg_missing: x(30),
+            pvd_count: x(31),
+            pvd_ms: x(32),
         })
     }
     pub fn valid(&self) -> bool {
+        self.magic == DIAG_MAGIC || self.magic == DIAG_MAGIC_V2
+    }
+    /// The record has reset counters and the assert line (firmware with TASKS).
+    pub fn has_counters(&self) -> bool {
         self.magic == DIAG_MAGIC
+    }
+    /// Names of the tasks in `wdg_missing`.
+    pub fn wdg_missing_ru(&self) -> String {
+        let v: Vec<&str> = [(1, "defaultTask"), (2, "LedTask"), (4, "Uart1Task")].iter().filter(|(b, _)| self.wdg_missing & b != 0).map(|(_, n)| *n).collect();
+        if v.is_empty() {
+            "не определена (завис сам контроль, сбой с выключенными прерываниями или проверка assert)".into()
+        } else {
+            v.join(", ")
+        }
     }
     pub fn has_fault(&self) -> bool {
         self.fault_magic == DIAG_FAULT_MAGIC
@@ -93,6 +131,7 @@ impl Diag {
             5 => "UsageFault",
             6 => "переполнение стека задачи",
             7 => "нехватка кучи FreeRTOS",
+            8 => "configASSERT — проверка в коде FreeRTOS не прошла",
             _ => "неизвестно",
         }
     }
@@ -114,5 +153,16 @@ mod tests {
         assert!(d.valid() && d.has_fault());
         assert_eq!(d.fault_task, "Uart1Task");
         assert!(d.error_name().contains("стека"));
+        assert!(d.has_counters());
+        // an older record: counters read as zero
+        w.resize(33, 7);
+        w[0] = DIAG_MAGIC;
+        let new = Diag::from_words(&w).unwrap();
+        assert_eq!((new.wdg_missing, new.pvd_count), (7, 7));
+        assert_eq!(new.wdg_missing_ru(), "defaultTask, LedTask, Uart1Task");
+        w[0] = DIAG_MAGIC_V2;
+        let old = Diag::from_words(&w).unwrap();
+        assert!(old.valid() && !old.has_counters());
+        assert_eq!((old.rst_soft, old.queue_peak), (0, 0));
     }
 }

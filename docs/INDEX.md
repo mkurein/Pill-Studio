@@ -14,7 +14,7 @@
 | [HARDWARE.md](HARDWARE.md) · [PINOUT.md](PINOUT.md) | 1100 · 700 | Blue Pill и Black Pill: MCU, периферия, память, пины |
 | [API.md](API.md) | 810 | сигнатуры функций модулей |
 | [SAFETY.md](SAFETY.md) | 470 | аварийные состояния |
-| [DECISIONS.md](DECISIONS.md) | 1900 | ADR-001..016 |
+| [DECISIONS.md](DECISIONS.md) | 1900 | ADR-001..018 |
 | [TODO.md](TODO.md) | 1000 | задачи T1..T11 |
 | [TASK_TEMPLATE.md](TASK_TEMPLATE.md) | 320 | формат задачи для Qwen |
 | [HIL_TESTING.md](HIL_TESTING.md) | ~900 | автотест на плате: `tools/hil.py`, подключение обеих плат |

@@ -11,9 +11,12 @@ pub const UART_BUF_SIZE: usize = 100;
 pub const CMD_PING: u8 = 0x01;
 pub const CMD_FRAM: u8 = 0x02;
 pub const CMD_STATUS: u8 = 0x03;
+pub const CMD_TASKS: u8 = 0x04;
 pub const CMD_RESET: u8 = 0x0F;
 pub const CMD_LED: u8 = 0x70;
 pub const CMD_LED_GET: u8 = 0x71;
+/// Fault injection: 0 clear the record, 1 stall the UART task, 2 assert, 3 HardFault, 4 fake PVD.
+pub const CMD_FAULT: u8 = 0x7F;
 
 pub const ST_OK: u8 = 0x00;
 pub const ST_FAIL: u8 = 0x01;
@@ -74,12 +77,19 @@ pub fn describe_request(body: &[u8]) -> String {
         (None, _) => "пустой кадр".into(),
         (Some(CMD_PING), _) => "PING — версия прошивки".into(),
         (Some(CMD_STATUS), _) => "STATUS — состояние RTOS".into(),
+        (Some(CMD_TASKS), _) => "TASKS — задачи FreeRTOS".into(),
         (Some(CMD_RESET), _) => "RESET — программный сброс".into(),
         (Some(CMD_LED), Some(0)) => "LED выкл (PC13 = 1)".into(),
         (Some(CMD_LED), Some(1)) => "LED вкл (PC13 = 0)".into(),
         (Some(CMD_LED), Some(2)) => "LED авто-мигание".into(),
         (Some(CMD_LED), _) => "LED (аргумент?)".into(),
         (Some(CMD_LED_GET), _) => "LED_GET — состояние PC13".into(),
+        (Some(CMD_FAULT), Some(0)) => "FAULT 0 — стереть запись о сбое".into(),
+        (Some(CMD_FAULT), Some(1)) => "FAULT 1 — остановить задачу UART (сторож)".into(),
+        (Some(CMD_FAULT), Some(2)) => "FAULT 2 — configASSERT".into(),
+        (Some(CMD_FAULT), Some(3)) => "FAULT 3 — HardFault".into(),
+        (Some(CMD_FAULT), Some(4)) => "FAULT 4 — имитация просадки (PVD)".into(),
+        (Some(CMD_FAULT), _) => "FAULT (аргумент?)".into(),
         (Some(CMD_FRAM), Some(0) | None) => "FRAM: запись/чтение \"KUREIN\"".into(),
         (Some(CMD_FRAM), Some(1)) => "FRAM: проверка присутствия (WEL)".into(),
         (Some(CMD_FRAM), Some(2)) => "FRAM: тест 64 байт".into(),
@@ -114,6 +124,89 @@ pub fn decode_reply(raw: &[u8]) -> Decoded {
         return Decoded::Garbage("CRC ответа не сходится".into());
     }
     Decoded::Ok(Reply { id: raw[0], status: raw[1], payload: raw[2..raw.len() - 2].to_vec() })
+}
+
+/// One task of the TASKS reply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskInfo {
+    /// First 8 characters of the FreeRTOS task name.
+    pub name: String,
+    /// eTaskState: 0 running, 1 ready, 2 blocked, 3 suspended, 4 deleted.
+    pub state: u8,
+    pub prio: u8,
+    /// Least stack ever free, bytes.
+    pub stack_free: u16,
+    /// CPU time of the task, microseconds (wraps).
+    pub run_us: u32,
+}
+
+/// TASKS reply: total run time, then up to 5 tasks.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Tasks {
+    pub run_us: u32,
+    pub tasks: Vec<TaskInfo>,
+}
+
+impl Tasks {
+    pub fn decode(p: &[u8]) -> Option<Tasks> {
+        let n = *p.get(4)? as usize;
+        if p.len() != 5 + 16 * n {
+            return None;
+        }
+        let u32le = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        let tasks = p[5..]
+            .chunks_exact(16)
+            .map(|r| TaskInfo {
+                name: String::from_utf8_lossy(r[..8].split(|b| *b == 0).next().unwrap_or(&[])).into_owned(),
+                state: r[8],
+                prio: r[9],
+                stack_free: u16::from_le_bytes([r[10], r[11]]),
+                run_us: u32le(&r[12..16]),
+            })
+            .collect();
+        Some(Tasks { run_us: u32le(&p[..4]), tasks })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut v = self.run_us.to_le_bytes().to_vec();
+        v.push(self.tasks.len() as u8);
+        for t in &self.tasks {
+            let mut name = [0u8; 8];
+            let b = t.name.as_bytes();
+            name[..b.len().min(8)].copy_from_slice(&b[..b.len().min(8)]);
+            v.extend(name);
+            v.extend([t.state, t.prio]);
+            v.extend(t.stack_free.to_le_bytes());
+            v.extend(t.run_us.to_le_bytes());
+        }
+        v
+    }
+
+    /// Share of CPU time of each task between `old` and `self`, 0..1, by name.
+    pub fn cpu_since(&self, old: &Tasks) -> Vec<(String, f32)> {
+        let dt = self.run_us.wrapping_sub(old.run_us);
+        if dt == 0 {
+            return vec![];
+        }
+        self.tasks
+            .iter()
+            .filter_map(|t| {
+                let o = old.tasks.iter().find(|o| o.name == t.name)?;
+                Some((t.name.clone(), (t.run_us.wrapping_sub(o.run_us) as f32 / dt as f32).clamp(0.0, 1.0)))
+            })
+            .collect()
+    }
+}
+
+pub fn task_state_ru(s: u8) -> &'static str {
+    match s {
+        0 => "выполняется",
+        1 => "готова",
+        2 => "ждёт",
+        3 => "приостановлена",
+        4 => "удалена",
+        _ => "?",
+    }
 }
 
 /// `status_reply_t` from main.c (packed, little-endian, 56 bytes).
@@ -285,6 +378,19 @@ mod tests {
         assert_eq!(frame(&[0x70, 0x00]), [0x70, 0x00, 0x24, 0x70]);
         assert_eq!(frame(&[0x02, 0x00]), [0x02, 0x00, 0x00, 0xD0]);
         assert_eq!(frame(&[0x01, 0x00]), [0x01, 0x00, 0x00, 0x20]);
+    }
+
+    #[test]
+    fn tasks_round_trip_and_cpu_share() {
+        let t = |name: &str, run| TaskInfo { name: name.into(), state: 2, prio: 24, stack_free: 420, run_us: run };
+        let a = Tasks { run_us: u32::MAX - 500_000, tasks: vec![t("IDLE", 100), t("Uart1Tas", 50)] };
+        assert_eq!(Tasks::decode(&a.encode()), Some(a.clone()));
+        assert_eq!(Tasks::decode(&a.encode()[..20]), None);
+        // the total wrapped between the two samples
+        let b = Tasks { run_us: 499_999, tasks: vec![t("IDLE", 900_100), t("Uart1Tas", 100_050)] };
+        let cpu = b.cpu_since(&a);
+        assert_eq!(cpu[0].0, "IDLE");
+        assert!((cpu[0].1 - 0.9).abs() < 0.001 && (cpu[1].1 - 0.1).abs() < 0.001);
     }
 
     #[test]

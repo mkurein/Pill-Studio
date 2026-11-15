@@ -59,6 +59,27 @@ DMA: нет. Timers: TIM1 = HAL timebase (SysTick отдан FreeRTOS).
 строка `FAULT` в UART3 (polling), IRQ off, вечный цикл. Так же HardFault /
 MemManage / BusFault / UsageFault (`DIAG_FAULT_ENTRY` в USER CODE `stm32f1xx_it.c`).
 
+`configASSERT` → `diag_assert(__FILE__, __LINE__)`: код 8, файл в `fault_task`, строка в
+`fault_line`, дальше как любой сбой (ADR-017). Раньше — молчаливый вечный цикл.
+
+## Watchdog
+
+IWDG от LSI, /64, reload 2500: ~4 с на F1, ~5 с на F4 (LSI неточен: до 9 с). Запускается
+в `main` после `uart1_start_rx()`. Каждая задача вызывает `diag_wdg_alive(DIAG_WDG_*)` в своём
+цикле; `defaultTask` раз в секунду вызывает `diag_wdg_supervise()` и сбрасывает таймер, только
+если отметились все три. `Uart1Task` для этого ждёт байт не бесконечно, а по 500 мс.
+Две секунды без отметки — маска пропавших пишется в `g_diag.wdg_missing`. При остановке
+ядра отладчиком таймер заморожен (`DBGMCU`). Новая задача = новый бит `DIAG_WDG_*` (ADR-018).
+
+## Run-time stats
+
+`configGENERATE_RUN_TIME_STATS = 1`. Счётчик — `diag_runtime_us()`: тик HAL (TIM1, 1 кГц)
+× 1000 + `TIM1->CNT` (1 МГц), отдельный таймер не нужен. Команда TASKS (0x04) отдаёт
+`uxTaskGetSystemState`: состояние, приоритет, минимум свободного стека и время каждой
+задачи; студия считает долю процессора между двумя ответами. В кадр помещается 5 задач
+(сейчас их ровно 5: defaultTask, LedTask, Uart1Task, IDLE, Tmr Svc); шестая в ответ не попадёт.
+Массив `TaskStatus_t[8]` статический (288 B RAM).
+
 ## Rules
 
 - В задачах `vTaskDelay` / `osDelay`, **не** `HAL_Delay`.

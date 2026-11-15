@@ -5,7 +5,7 @@
 use crate::app::{Act, Shared, View};
 use crate::core::boot::{self, Stage, Step};
 use crate::core::elf;
-use crate::core::proto::{CMD_RESET, CMD_STATUS};
+use crate::core::proto::{CMD_FAULT, CMD_RESET, CMD_STATUS};
 use crate::fmt;
 use crate::theme::Pal;
 use crate::widgets::*;
@@ -26,6 +26,8 @@ pub struct St {
     /// A reset asked from this screen: (what, boot_count before, when to ask the board again).
     asked: Option<(&'static str, Option<u32>, Instant)>,
     asked_done: bool,
+    /// The pending answer comes after a watchdog reset (seconds, not milliseconds).
+    asked_wdg: bool,
 }
 
 fn stage_color(p: &Pal, s: Stage) -> Color32 {
@@ -127,6 +129,8 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         super::fresh::bar(ui, sh);
         reset_card(ui, sh, st);
         ui.add_space(8.0);
+        guard_card(ui, sh, st);
+        ui.add_space(8.0);
         path_card(ui, sh, st);
         ui.add_space(8.0);
         egui::CollapsingHeader::new("Справка: что переживает сброс, вход в прерывание, сбой питания").id_salt("boot_ref").show(ui, |ui| {
@@ -189,8 +193,8 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     &["Ситуация", "Что происходит сейчас"],
                     &["Питание пропало и вернулось", "Сброс POR/PDR: RAM теряется, g_diag начинается с нуля (boot_count = 1), запись о прошлом сбое пропадает. Прошивка стартует обычным путём."],
                     &["Короткая просадка, RAM не успела потеряться", "Сброс PDR (на F4 может быть BOR). g_diag обычно цел: метка DIAG_MAGIC на месте, boot_count растёт дальше — так просадку можно отличить от полного выключения."],
-                    &["Питание медленно падает", "Прошивка об этом не узнаёт: детектор PVD не включён. Запись во Flash или SPI-память в этот момент может оборваться."],
-                    &["Программа зависла", "Сторожевой таймер IWDG не включён: плата останется висеть до ручного сброса."],
+                    &["Питание падает ниже 2.9 В", "Срабатывает детектор PVD: прерывание увеличивает счётчик pvd_count в g_diag и запоминает время. Если RAM уцелела, после сброса видно, что была просадка."],
+                    &["Задача зависла или сбой остановил программу", "Сторожевой таймер IWDG (4–5 с): задачи отмечаются раз в секунду, без отметки любой из них таймер не сбрасывается и перезапускает плату. Виновная задача и запись о сбое остаются в g_diag."],
                 ],
             );
             ui.add_space(4.0);
@@ -198,7 +202,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui,
                 &p,
                 "Проверить вручную: запомните boot_count, снимите и верните питание платы, нажмите «Обновить» вверху — должно быть boot_count = 1 и причина «включение питания». \
-                 Раннее предупреждение о просадке (PVD) и сторожевой таймер требуют правок прошивки — это следующий шаг.",
+                 Сторож и PVD проверяются кнопками в карточке «Проверка защиты» (нужна прошивка с командой FAULT).",
             );
         });
         });
@@ -217,6 +221,7 @@ fn reset_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 if ui.add_enabled(enabled, egui::Button::new(label)).on_hover_text(tip).clicked() {
                     st.asked = Some((kind, now.map(|n| n.0), Instant::now() + Duration::from_millis(900)));
                     st.asked_done = false;
+                    st.asked_wdg = false;
                     true
                 } else {
                     false
@@ -261,6 +266,20 @@ fn reset_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 }
                 None => {}
             }
+        }
+        if let Some(d) = sh.st.diag.as_ref().filter(|d| d.has_counters()) {
+            ui.label(
+                RichText::new(format!(
+                    "С подачи питания: программных сбросов {} · по NRST {} · просадок питания {} · сторожевых {}",
+                    d.rst_soft, d.rst_pin, d.rst_power, d.rst_wdg
+                ))
+                .small()
+                .color(p.fg2),
+            )
+            .on_hover_text("счётчики из g_diag по SWD; обнуляются при потере питания");
+        }
+        if let Some(d) = sh.st.diag.as_ref().filter(|d| d.has_counters() && d.pvd_count > 0) {
+            ui.label(RichText::new(format!("Просадок питания ниже 2.9 В (PVD): {}, последняя на {} мс работы", d.pvd_count, d.pvd_ms)).small().color(p.warn));
         }
         if let Some(l) = sh.lines.iter().rev().find(|l| l.text.starts_with("BOOT")) {
             ui.label(RichText::new(format!("в логе: {}", l.text)).monospace().small().color(p.fg2));
@@ -347,5 +366,65 @@ fn path_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui.end_row();
             }
         });
+    });
+}
+
+/// Fault injection: the firmware breaks itself on command, the watchdog must
+/// bring it back and g_diag must say what happened.
+fn guard_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
+    let p = sh.pal;
+    card(ui, &p, "Проверка защиты: сторожевой таймер, assert, сбой, просадка питания", |ui| {
+        let now = last_boot(sh).map(|n| n.0);
+        let on = sh.uart_ok();
+        ui.horizontal_wrapped(|ui| {
+            let mut inject = |ui: &mut egui::Ui, label: &str, tip: &str, what: u8, kind: &'static str| {
+                if ui.add_enabled(on, egui::Button::new(label)).on_hover_text(tip).clicked() {
+                    sh.send(vec![CMD_FAULT, what]);
+                    // the watchdog needs 4-5 s (up to 9 s on a slow LSI), then the board boots
+                    st.asked = Some((kind, now, Instant::now() + Duration::from_millis(7000)));
+                    st.asked_done = false;
+                    st.asked_wdg = true;
+                }
+            };
+            inject(ui, "Остановить задачу UART", "задача перестаёт отмечаться; сторож перезапустит плату через 4–6 с и запишет виновника", 1, "остановка задачи");
+            inject(ui, "configASSERT", "проверка ядра FreeRTOS не проходит: файл и строка в g_diag, затем сторож", 2, "assert");
+            inject(ui, "HardFault", "запись по несуществующему адресу: PC сбоя в g_diag, затем сторож", 3, "HardFault");
+            if ui.add_enabled(on, egui::Button::new("Просадка питания (PVD)")).on_hover_text("программно вызывает прерывание PVD, как при падении ниже 2.9 В; плата не сбрасывается").clicked() {
+                sh.send(vec![CMD_FAULT, 4]);
+                st.asked = Some(("PVD", now, Instant::now() + Duration::from_millis(300)));
+                st.asked_done = false;
+                st.asked_wdg = false;
+            }
+            if ui.add_enabled(on, egui::Button::new("Стереть запись о сбое")).on_hover_text("после разбора: иначе PREV_FAULT печатается при каждом старте").clicked() {
+                sh.send(vec![CMD_FAULT, 0]);
+                ask_board(sh);
+            }
+        });
+        if !on {
+            hint(ui, &p, "Нужен UART1. Виновника и место сбоя студия читает из g_diag по SWD — подключите и ST-Link.");
+            return;
+        }
+        if let (Some((kind, _, at)), false, true) = (st.asked, st.asked_done, st.asked_wdg) {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(format!("{kind}: ждём сторожевой таймер, ещё {:.0} с", at.saturating_duration_since(Instant::now()).as_secs_f32().ceil()));
+            });
+        }
+        let Some(d) = sh.st.diag.as_ref().filter(|d| d.has_counters()) else {
+            hint(ui, &p, "Результат (виновная задача, файл и строка, счётчик PVD) появится здесь, когда подключён ST-Link и прошивка знает команду FAULT.");
+            return;
+        };
+        egui::Grid::new("guard_kv").num_columns(2).spacing([14.0, 3.0]).show(ui, |ui| {
+            kv(ui, &p, "Сбросов сторожем с подачи питания", d.rst_wdg.to_string());
+            if d.rst_wdg > 0 {
+                kv(ui, &p, "Перестала отмечаться", d.wdg_missing_ru());
+            }
+            if d.has_fault() {
+                let place = if d.error_code == 8 { format!(" — {}:{}", d.fault_task, d.fault_line) } else { format!(" — PC 0x{:08X}", d.fault_pc) };
+                kv(ui, &p, "Запись о сбое", format!("{}{place}", d.error_name()));
+            }
+            kv(ui, &p, "Просадок питания (PVD)", d.pvd_count.to_string());
+        });
+        hint(ui, &p, "Это настоящие сбои на плате: она перезапустится. Подробный разбор сбоя — «SWD-отладка» → «Анализ сбоя».");
     });
 }

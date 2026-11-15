@@ -31,7 +31,7 @@ Toolchain из STM32CubeIDE 1.17.0 должен быть в PATH
 
 ## Verify on hardware
 
-`.venv/bin/python tools/hil.py test` — сборка, прошивка по SWD, ~30 проверок
+`.venv/bin/python tools/hil.py test` — сборка, прошивка по SWD, ~40 проверок (включая сторож, assert и PVD)
 по UART1/UART3/SWD, exit 0 = PASS, отчёт `build/hil_report.json`.
 Отладка: `hil.py log 5`, `hil.py diag`, `hil.py regs`, `hil.py gpio`.
 Плата определяется по линкер-скрипту в корне (`HIL_BOARD=f103|f411` — вручную);

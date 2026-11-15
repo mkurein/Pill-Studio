@@ -31,6 +31,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             ui.label(format!("период {} мс", sh.st.poll_ms));
             if ui.button("Запросить").clicked() {
                 sh.send(vec![CMD_STATUS]);
+                if !sh.st.tasks_missing {
+                    sh.send(vec![proto::CMD_TASKS]);
+                }
             }
             if sh.swd_ok() && ui.button("Прочитать g_diag по SWD").clicked() {
                 sh.job(Job::ReadDiag);
@@ -58,6 +61,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         });
         ui.add_space(8.0);
         ui.columns(2, |cols| {
+            if let Some(t) = &sh.st.tasks {
+                card(&mut cols[0], &p, "Задачи (команда TASKS)", |ui| live_tasks(ui, sh, t));
+            } else {
             card(&mut cols[0], &p, "Задачи и стеки", |ui| {
                 egui::Grid::new("tasks").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
                     for h in ["Задача", "Приоритет", "Стек", "Использовано (пик)"] {
@@ -83,7 +89,11 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     }
                 });
                 hint(ui, &p, "Пик = размер − «высокая вода» (uxTaskGetStackHighWaterMark). < 128 Б свободно — пора увеличивать стек. Наведите на имя задачи — её назначение.");
+                if sh.st.tasks_missing {
+                    hint(ui, &p, "Прошивка на плате старше команды TASKS: состояние задач и загрузка процессора появятся после прошивки свежей сборки.");
+                }
             });
+            }
             card(&mut cols[1], &p, "Куча FreeRTOS (heap_4, 10 КБ)", |ui| {
                 let heap_total = proto::heap_total();
                 let used = heap_total - s.heap_free;
@@ -105,6 +115,11 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     kv(ui, &p, "последний сбой", if d.has_fault() { d.error_name().to_string() } else { "нет".into() });
                     kv(ui, &p, "rx_overflow", d.rx_overflow.to_string());
                     kv(ui, &p, "last_cmd", format!("0x{:02X}", d.last_cmd));
+                    if d.has_counters() {
+                        ui.end_row();
+                        kv(ui, &p, "сбросов с подачи питания", format!("программных {} · NRST {} · просадок питания {} · сторожевых {}", d.rst_soft, d.rst_pin, d.rst_power, d.rst_wdg));
+                        kv(ui, &p, "пик очереди uartQueue", format!("{} из 100 байт", d.queue_peak));
+                    }
                 });
             });
         }
@@ -185,4 +200,50 @@ fn flow(ui: &mut egui::Ui, sh: &Shared) {
         cv.text(870.0, 175.0, Align2::LEFT_TOP, "сбой → FAULT", 11.0, p.err);
         cv.text(870.0, 192.0, Align2::LEFT_TOP, "+ g_diag (.noinit)", 11.0, p.err);
     });
+}
+
+/// Live task table from TASKS: state, priority, least free stack and the
+/// share of CPU time since the previous reply.
+fn live_tasks(ui: &mut egui::Ui, sh: &Shared, t: &proto::Tasks) {
+    let p = sh.pal;
+    let cpu = sh.st.tasks_prev.as_ref().map(|o| t.cpu_since(o)).unwrap_or_default();
+    let share = |name: &str| cpu.iter().find(|c| c.0 == name).map(|c| c.1);
+    if let Some(idle) = share("IDLE") {
+        let load = 1.0 - idle;
+        ui.horizontal(|ui| {
+            ui.label("Загрузка процессора");
+            gauge(ui, &p, load, &format!("{:.1} % (простой {:.1} %)", load * 100.0, idle * 100.0), level(&p, load), 260.0);
+        });
+    }
+    let mut rows: Vec<&proto::TaskInfo> = t.tasks.iter().collect();
+    rows.sort_by(|a, b| b.prio.cmp(&a.prio).then(a.name.cmp(&b.name)));
+    egui::Grid::new("live_tasks").num_columns(5).striped(true).spacing([12.0, 5.0]).show(ui, |ui| {
+        for h in ["Задача", "Состояние", "Приоритет", "Стек свободно (мин.)", "Время процессора"] {
+            ui.label(RichText::new(h).strong().color(p.fg2));
+        }
+        ui.end_row();
+        for r in rows {
+            let kernel = r.name == "IDLE" || r.name.starts_with("Tmr");
+            ui.label(RichText::new(&r.name).monospace().strong().color(if kernel { p.muted } else { p.fg }));
+            ui.label(RichText::new(proto::task_state_ru(r.state)).color(match r.state {
+                0 => p.ok,
+                1 => p.accent,
+                _ => p.fg2,
+            }));
+            ui.label(r.prio.to_string());
+            ui.label(RichText::new(format!("{} Б", r.stack_free)).monospace().color(if r.stack_free < 128 { p.err } else { p.fg }));
+            match share(&r.name) {
+                Some(s) => gauge(ui, &p, s, &format!("{:.1} %", s * 100.0), if kernel { p.muted } else { p.accent }, 150.0),
+                None => {
+                    ui.label(RichText::new("ждём второй ответ").small().color(p.muted));
+                }
+            }
+            ui.end_row();
+        }
+    });
+    hint(
+        ui,
+        &p,
+        "Состояние — на момент ответа: «выполняется» всегда у задачи UART, она и отвечает. Время — доля между двумя последними опросами. Стек: меньше 128 Б свободно — пора увеличивать. Имена обрезаны до 8 символов.",
+    );
 }

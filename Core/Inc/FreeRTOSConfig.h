@@ -137,7 +137,17 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 /* Normal assert() semantics without relying on the provision of an assert.h
 header file. */
 /* USER CODE BEGIN 1 */
-#define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* A failed assert is recorded in g_diag (file, line) and printed as FAULT. */
+#ifndef __ASSEMBLER__
+extern void diag_assert(const char *file, int line);
+extern uint32_t diag_runtime_us(void);
+#endif
+#define configASSERT( x ) if ((x) == 0) { diag_assert(__FILE__, __LINE__); }
+
+/* Per-task CPU time for the TASKS command (microseconds from TIM1). */
+#define configGENERATE_RUN_TIME_STATS            1
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()
+#define portGET_RUN_TIME_COUNTER_VALUE()         diag_runtime_us()
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

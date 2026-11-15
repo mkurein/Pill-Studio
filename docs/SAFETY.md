@@ -18,19 +18,24 @@ UsageFault `NOCP`, если FPU не включён до первой float-оп
 | HardFault / MemManage / BusFault / UsageFault | CPU exception | `diag_fault(2..5)`: PC, LR, CFSR, HFSR, BFAR | `FAULT code=..` в UART3, `g_diag` |
 | Stack overflow | FreeRTOS method 2 | `diag_fault(6, task)`, halt | `FAULT code=6 .. task=<name>` |
 | Heap exhausted | malloc-failed hook | `diag_fault(7)`, halt | `FAULT code=7` |
+| `configASSERT` failed | проверки ядра FreeRTOS | `diag_assert` → `diag_fault(8, файл)`, строка в `fault_line`, halt | `FAULT code=8 .. task=<файл.c>` |
 | Queue / task create fail | NULL handle | `Error_Handler` | `FAULT code=1` |
 | UART1 ORE/FE/NE | `HAL_UART_ErrorCallback` | `uart_err++`, RX перезапущен | STATUS, `DIAG uart_err=` |
 | Queue full | `xQueueSendFromISR` fail | байт потерян, `queue_full++` | STATUS |
 | Bad CRC / overflow / unknown | `Uart1Task` | команда не выполняется | ответ `E1` / `E3` / `E2` |
-| Reset | `RCC->CSR` at boot | лог, флаги сброшены, `boot_count++` | `BOOT .. rst=0x..` |
+| Task stalled | нет отметки `diag_wdg_alive` > 2 с | IWDG не сбрасывается → сброс через 4–5 с, `wdg_missing`, `rst_wdg++` | `BOOT rst=0x24..`, `g_diag` |
+| VDD < 2.9 V | PVD, EXTI16 | `pvd_count++`, `pvd_ms` | `g_diag` |
+| Reset | `RCC->CSR` at boot | лог, флаги сброшены, `boot_count++`, счётчик причины `rst_*++` | `BOOT .. rst=0x..`, `g_diag` |
 
 `g_diag` лежит в `.noinit`: после soft reset (кнопка, SWD, `0x0F`) запись о
-сбое остаётся и печатается при старте как `PREV_FAULT`. После power-on — обнуляется.
+сбое остаётся и печатается при старте как `PREV_FAULT`, пока её не сотрут командой
+FAULT 0. После power-on — обнуляется. Halt после сбоя длится до сброса сторожем (4–5 с);
+до запуска сторожа (ошибка инициализации) — бесконечно, как раньше.
 Читать по SWD: `tools/hil.py diag` (PC → файл:строка).
 
 ## Not implemented
 
-- Watchdog (IWDG / WWDG) — после halt MCU висит до ручного сброса.
+- Сохранение данных по PVD (сейчас только счётчик); уровень BOR в option bytes не меняется.
 - Mutex на SPI1/FRAM (используется только из `Uart1Task`).
 
 ## Rules for changes

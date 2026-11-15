@@ -4,7 +4,7 @@ Pill Studio — отладочная программа для плат Blue Pil
 Исходники лежат в папке `studio/` этого репозитория, крейт называется `pill-studio`.
 Прошивка собирается отдельно: Blue Pill — из корня этого репозитория (`make` или `make -C Debug all -j8`), Black Pill — в репозитории F411CE.
 
-Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml` (сейчас `0.2.9`). Нужен Rust 1.88 или новее.
+Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml` (сейчас `0.3.0`). Нужен Rust 1.88 или новее.
 
 ## Windows
 
@@ -56,9 +56,9 @@ powershell -ExecutionPolicy Bypass -File .\build_windows.ps1
 Скрипт прогоняет `cargo test`, собирает release и вызывает Inno Setup. На выходе:
 
 ```text
-studio\release\v0.2.9\Pill-Studio-v0.2.9-windows-x64-setup.exe
-studio\release\v0.2.9\Pill-Studio-v0.2.9-windows-x64.zip
-studio\release\v0.2.9\checksum.txt
+studio\release\v0.3.0\Pill-Studio-v0.3.0-windows-x64-setup.exe
+studio\release\v0.3.0\Pill-Studio-v0.3.0-windows-x64.zip
+studio\release\v0.3.0\checksum.txt
 ```
 
 `setup.exe` ставит программу в профиль пользователя: `%LOCALAPPDATA%\Programs\Pill Studio`. Права администратора не нужны. Галочка «ярлык на рабочем столе» в мастере уже включена.
@@ -106,9 +106,9 @@ python3 build_macos.py --open
 На выходе (вместо `arm64` будет `x64` или `universal`):
 
 ```text
-studio/release/v0.2.9/Pill-Studio-v0.2.9-macos-arm64.dmg
-studio/release/v0.2.9/Pill-Studio-v0.2.9-macos-arm64.app.zip
-studio/release/v0.2.9/checksum.txt
+studio/release/v0.3.0/Pill-Studio-v0.3.0-macos-arm64.dmg
+studio/release/v0.3.0/Pill-Studio-v0.3.0-macos-arm64.app.zip
+studio/release/v0.3.0/checksum.txt
 ```
 
 Первый запуск скачанного приложения: правый клик по `Pill Studio.app` → «Открыть». Если приложение уже скопировано в «Программы»:

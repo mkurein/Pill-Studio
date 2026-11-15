@@ -64,6 +64,9 @@ LOG_BAUD = 115200
 # --- protocol (keep in sync with Core/Inc/DataFile.h) -------------------------
 ID_BU = 0x01
 CMD_PING, CMD_FRAM, CMD_STATUS, CMD_RESET, CMD_LED, CMD_LED_GET = 0x01, 0x02, 0x03, 0x0F, 0x70, 0x71
+CMD_TASKS = 0x04
+CMD_FAULT = 0x7F   # 0 clear record, 1 stall task, 2 assert, 3 HardFault, 4 fake PVD
+TASK_STATES = ["running", "ready", "blocked", "suspended", "deleted"]
 ST_NAMES = {0x00: "OK", 0x01: "FAIL", 0x02: "BAD_ARG", 0xE1: "BAD_CRC", 0xE2: "UNKNOWN_CMD", 0xE3: "OVERFLOW"}
 
 STATUS_FMT = "<6I3H6I2B"
@@ -77,9 +80,11 @@ DIAG_FIELDS = ["magic", "boot_count", "reset_cause", "heartbeat",
                "fault_magic", "error_code", "fault_pc", "fault_lr", "fault_cfsr", "fault_hfsr",
                "fault_bfar", "fault_mmfar", "fault_task0", "fault_task1", "fault_task2", "fault_task3",
                "rx_frames", "rx_crc_err", "rx_overflow", "uart_err", "queue_full", "last_cmd",
-               "fram_ok", "fram_fail"]
+               "fram_ok", "fram_fail",
+               "fault_line", "rst_soft", "rst_pin", "rst_power", "rst_wdg", "queue_peak",
+               "wdg_missing", "pvd_count", "pvd_ms"]
 DIAG_ERR = {0: "NONE", 1: "Error_Handler", 2: "HardFault", 3: "MemManage", 4: "BusFault",
-            5: "UsageFault", 6: "StackOverflow", 7: "MallocFailed"}
+            5: "UsageFault", 6: "StackOverflow", 7: "MallocFailed", 8: "Assert"}
 
 GPIOC_BASE = BOARD["gpioc"]
 
@@ -189,10 +194,24 @@ def read_diag(cfg):
     d = dict(zip(DIAG_FIELDS, words))
     task = b"".join(struct.pack("<I", d.pop(f"fault_task{i}")) for i in range(4))
     d["fault_task"] = task.split(b"\0")[0].decode(errors="replace")
-    d["valid"] = d["magic"] == 0xD1A60002
+    d["valid"] = d["magic"] == 0xD1A60004
     d["fault_recorded"] = d["fault_magic"] == 0xFA017ED
     d["error_name"] = DIAG_ERR.get(d["error_code"], "?")
     return d
+
+
+def decode_tasks(payload):
+    """TASKS reply: run_time_us u32, count u8, count x (name[8], state, prio, stack_free u16, run_time_us u32)."""
+    if len(payload) < 5 or len(payload) != 5 + 16 * payload[4]:
+        return None
+    total = struct.unpack_from("<I", payload, 0)[0]
+    tasks = []
+    for i in range(payload[4]):
+        name, state, prio, free, run = struct.unpack_from("<8sBBHI", payload, 5 + 16 * i)
+        tasks.append({"name": name.split(b"\0")[0].decode(errors="replace"),
+                      "state": TASK_STATES[state] if state < len(TASK_STATES) else str(state),
+                      "prio": prio, "stack_free": free, "run_us": run})
+    return {"run_us": total, "tasks": tasks}
 
 
 def addr2line(pc):
@@ -443,6 +462,20 @@ def run_tests(cfg, args):
             rep.add("status: heartbeat advances (RTOS alive)", st2 and st2["heartbeat"] >= hb0 + 2,
                     f"{hb0} -> {st2 and st2['heartbeat']}")
 
+        tk = decode_tasks(p.cmd(CMD_TASKS)["payload"])
+        rep.add("uart1: TASKS decode", tk is not None, tk and [t["name"] for t in tk["tasks"]])
+        if tk:
+            names = [t["name"] for t in tk["tasks"]]
+            rep.add("tasks: IDLE and Uart1Tas present", "IDLE" in names and "Uart1Tas" in names, names)
+            time.sleep(1.0)
+            tk2 = decode_tasks(p.cmd(CMD_TASKS)["payload"])
+            dt = tk2 and (tk2["run_us"] - tk["run_us"]) & 0xFFFFFFFF
+            rep.add("tasks: run-time counter advances ~1 s", tk2 and 800_000 < dt < 1_500_000, dt)
+            idle = {t["name"]: t["run_us"] for t in tk["tasks"]}.get("IDLE", 0)
+            idle2 = tk2 and {t["name"]: t["run_us"] for t in tk2["tasks"]}.get("IDLE", 0)
+            share = tk2 and dt and ((idle2 - idle) & 0xFFFFFFFF) / dt
+            rep.add("tasks: CPU mostly idle (> 80 %)", tk2 and share > 0.8, tk2 and f"{share:.1%}")
+
         # reset via command: reboot must be visible as boot_count+1
         if st:
             r = p.cmd(CMD_RESET)
@@ -450,12 +483,56 @@ def run_tests(cfg, args):
             st3 = decode_status(p.cmd(CMD_STATUS)["payload"])
             rep.add("uart1: RESET cmd -> reboot", st3 and st3["boot_count"] == st["boot_count"] + 1,
                     st3 and {"boot_count": st3["boot_count"], "reset_cause": hex(st3["reset_cause"])})
+        # watchdog, assert and PVD: inject the fault, the board must come back by itself
+        def wait_reboot(boots, limit=14.0):
+            t0 = time.time()
+            while time.time() - t0 < limit:
+                time.sleep(0.5)
+                s = decode_status(p.cmd(CMD_STATUS)["payload"])
+                if s and s["boot_count"] != boots:
+                    return s, time.time() - t0
+            return None, limit
+
+        st4 = decode_status(p.cmd(CMD_STATUS)["payload"])
+        if st4:
+            r = p.cmd(CMD_FAULT, 4)
+            rep.add("fault: fake PVD accepted", r["status"] == 0, r.get("status_name"))
+            p.cmd(CMD_FAULT, 1)
+            s5, dt = wait_reboot(st4["boot_count"])
+            rep.add("wdg: stalled task -> IWDG reset", bool(s5) and s5["boot_count"] == st4["boot_count"] + 1
+                    and bool(s5["reset_cause"] & (1 << 29)),
+                    s5 and {"after_s": round(dt, 1), "reset_cause": hex(s5["reset_cause"])})
+            if s5 and swd:
+                try:
+                    d = read_diag(cfg)
+                    rep.add("wdg: g_diag names the stalled task (UART = 4)", d["wdg_missing"] == 4 and d["rst_wdg"] >= 1,
+                            {k: d[k] for k in ("wdg_missing", "rst_wdg")})
+                    rep.add("pvd: dip counted", d["pvd_count"] >= 1, {k: d[k] for k in ("pvd_count", "pvd_ms")})
+                except SwdError as e:
+                    rep.add("wdg: diag read", False, str(e))
+            if s5:
+                p.cmd(CMD_FAULT, 2)
+                s6, dt = wait_reboot(s5["boot_count"])
+                rep.add("assert: watchdog restarts the board", bool(s6) and bool(s6["reset_cause"] & (1 << 29)),
+                        s6 and {"after_s": round(dt, 1)})
+                if s6 and swd:
+                    try:
+                        d = read_diag(cfg)
+                        rep.add("assert: file and line recorded", d["fault_recorded"] and d["error_code"] == 8
+                                and d["fault_task"] == "main.c" and d["fault_line"] > 0,
+                                f"{d['error_name']} {d['fault_task']}:{d['fault_line']}")
+                    except SwdError as e:
+                        rep.add("assert: diag read", False, str(e))
+                r = p.cmd(CMD_FAULT, 0)
+                rep.add("fault: record cleared by command", r["status"] == 0, r.get("status_name"))
         p.close()
 
     if swd:
         try:
             d = read_diag(cfg)
             rep.add("swd: g_diag valid", d["valid"], hex(d["magic"]))
+            rep.add("swd: soft reset counted", d["rst_soft"] >= 1,
+                    {k: d[k] for k in ("rst_soft", "rst_pin", "rst_power", "rst_wdg", "queue_peak")})
             rep.add("swd: no fault recorded", not d["fault_recorded"],
                     None if not d["fault_recorded"] else
                     f"{d['error_name']} pc={addr2line(d['fault_pc'])} task={d['fault_task']}")

@@ -424,7 +424,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                                 if d.fault_cfsr & (1 << 15) != 0 {
                                     kv(ui, &p, "BFAR (адрес)", format!("0x{:08X}", d.fault_bfar));
                                 }
-                                if !d.fault_task.is_empty() {
+                                if d.error_code == 8 {
+                                    kv(ui, &p, "Проверка configASSERT", format!("{}:{}", d.fault_task, d.fault_line));
+                                } else if !d.fault_task.is_empty() {
                                     kv(ui, &p, "Задача", d.fault_task.clone());
                                 }
                             });

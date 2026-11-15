@@ -54,7 +54,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
         let label = if st.help { "✕ Скрыть описание SWD" } else { "ℹ Что такое SWD и как это работает" };
         if ui
             .button(label)
-            .on_hover_text("провода, протокол, отладочные блоки ядра, цепочка Pill Studio → OpenOCD → ST-Link → чип, что делать, если плата не видна")
+            .on_hover_text("провода, чем SWD отличается от JTAG, протокол, отладочные блоки ядра, цепочка Pill Studio → OpenOCD → ST-Link → чип, что делать, если плата не видна")
             .clicked()
         {
             st.help = !st.help;

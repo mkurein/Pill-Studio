@@ -29,6 +29,7 @@
 | `void diag_wdg_alive(uint32_t task)` | отметка задачи `DIAG_WDG_*`, из цикла задачи |
 | `void diag_wdg_supervise(void)` | раз в секунду из `defaultTask`: сброс IWDG, если отметились все |
 | `void diag_pvd_start(void)` | PVD 2.9 В, `PVD_IRQHandler` в diag.c считает просадки |
+| `void diag_msp_fill(void)` / `uint32_t diag_msp_free(void)` | метка главного стека в начале `main()` и сколько байт осталось нетронутым |
 | `void diag_fault_clear(void)` | стереть запись о сбое (команда FAULT 0) |
 | `DIAG_FAULT_ENTRY(code)` | первой строкой fault handler (USER CODE) |
 | `void diag_puts_raw(const char *)` | polling USART3, работает при IRQ off |

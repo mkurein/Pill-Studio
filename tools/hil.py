@@ -65,6 +65,9 @@ LOG_BAUD = 115200
 ID_BU = 0x01
 CMD_PING, CMD_FRAM, CMD_STATUS, CMD_RESET, CMD_LED, CMD_LED_GET = 0x01, 0x02, 0x03, 0x0F, 0x70, 0x71
 CMD_TASKS = 0x04
+CMD_STATS = 0x05
+STATS_FMT = "<2H5I"
+STATS_FIELDS = ["msp_free", "msp_size", "ctx_switches", "irq_systick", "irq_tick", "irq_usart1", "pvd_count"]
 CMD_FAULT = 0x7F   # 0 clear record, 1 stall task, 2 assert, 3 HardFault, 4 fake PVD
 TASK_STATES = ["running", "ready", "blocked", "suspended", "deleted"]
 ST_NAMES = {0x00: "OK", 0x01: "FAIL", 0x02: "BAD_ARG", 0xE1: "BAD_CRC", 0xE2: "UNKNOWN_CMD", 0xE3: "OVERFLOW"}
@@ -82,7 +85,8 @@ DIAG_FIELDS = ["magic", "boot_count", "reset_cause", "heartbeat",
                "rx_frames", "rx_crc_err", "rx_overflow", "uart_err", "queue_full", "last_cmd",
                "fram_ok", "fram_fail",
                "fault_line", "rst_soft", "rst_pin", "rst_power", "rst_wdg", "queue_peak",
-               "wdg_missing", "pvd_count", "pvd_ms"]
+               "wdg_missing", "pvd_count", "pvd_ms",
+               "msp_free", "msp_size", "ctx_switches", "irq_systick", "irq_tick", "irq_usart1"]
 DIAG_ERR = {0: "NONE", 1: "Error_Handler", 2: "HardFault", 3: "MemManage", 4: "BusFault",
             5: "UsageFault", 6: "StackOverflow", 7: "MallocFailed", 8: "Assert"}
 
@@ -194,10 +198,16 @@ def read_diag(cfg):
     d = dict(zip(DIAG_FIELDS, words))
     task = b"".join(struct.pack("<I", d.pop(f"fault_task{i}")) for i in range(4))
     d["fault_task"] = task.split(b"\0")[0].decode(errors="replace")
-    d["valid"] = d["magic"] == 0xD1A60004
+    d["valid"] = d["magic"] == 0xD1A60005
     d["fault_recorded"] = d["fault_magic"] == 0xFA017ED
     d["error_name"] = DIAG_ERR.get(d["error_code"], "?")
     return d
+
+
+def decode_stats(payload):
+    if len(payload) != struct.calcsize(STATS_FMT):
+        return None
+    return dict(zip(STATS_FIELDS, struct.unpack(STATS_FMT, payload)))
 
 
 def decode_tasks(payload):
@@ -475,6 +485,23 @@ def run_tests(cfg, args):
             idle2 = tk2 and {t["name"]: t["run_us"] for t in tk2["tasks"]}.get("IDLE", 0)
             share = tk2 and dt and ((idle2 - idle) & 0xFFFFFFFF) / dt
             rep.add("tasks: CPU mostly idle (> 80 %)", tk2 and share > 0.8, tk2 and f"{share:.1%}")
+
+        s1 = decode_stats(p.cmd(CMD_STATS)["payload"])
+        rep.add("uart1: STATS decode", s1 is not None, s1)
+        if s1:
+            rep.add("stats: main stack never full", 0 < s1["msp_free"] <= s1["msp_size"],
+                    f"{s1['msp_size'] - s1['msp_free']} of {s1['msp_size']} B used")
+            t0 = time.time()
+            time.sleep(1.0)
+            s2 = decode_stats(p.cmd(CMD_STATS)["payload"])
+            dt = time.time() - t0
+            rate = lambda k: s2 and ((s2[k] - s1[k]) & 0xFFFFFFFF) / dt
+            rep.add("stats: SysTick and TIM1 tick ~1000/s", bool(s2) and 900 < rate("irq_systick") < 1100
+                    and 900 < rate("irq_tick") < 1100,
+                    s2 and {k: round(rate(k)) for k in ("irq_systick", "irq_tick")})
+            rep.add("stats: USART1 irq and task switches counted", bool(s2) and rate("irq_usart1") >= 2
+                    and rate("ctx_switches") > 1,
+                    s2 and {k: round(rate(k)) for k in ("irq_usart1", "ctx_switches")})
 
         # reset via command: reboot must be visible as boot_count+1
         if st:

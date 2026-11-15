@@ -141,6 +141,10 @@ header file. */
 #ifndef __ASSEMBLER__
 extern void diag_assert(const char *file, int line);
 extern uint32_t diag_runtime_us(void);
+#include "diag.h"
+/* Counted inside the kernel: task switches and ticks (SysTick). */
+#define traceTASK_SWITCHED_IN()           (g_diag.ctx_switches++)
+#define traceTASK_INCREMENT_TICK( x )     (g_diag.irq_systick++)
 #endif
 #define configASSERT( x ) if ((x) == 0) { diag_assert(__FILE__, __LINE__); }
 

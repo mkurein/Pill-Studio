@@ -52,13 +52,16 @@ pub struct Diag {
     /// Supply dips below 2.9 V since power-on, and the HAL tick of the last one.
     pub pvd_count: u32,
     pub pvd_ms: u32,
+    /// Main stack: bytes never used of `msp_size` watched below `_estack`.
+    pub msp_free: u32,
+    pub msp_size: u32,
 }
 
-pub const DIAG_MAGIC: u32 = 0xD1A6_0004;
+pub const DIAG_MAGIC: u32 = 0xD1A6_0005;
 /// Firmware before the reset counters: the first 24 words are the same.
 pub const DIAG_MAGIC_V2: u32 = 0xD1A6_0002;
 pub const DIAG_FAULT_MAGIC: u32 = 0x0FA0_17ED;
-pub const DIAG_WORDS: u32 = 33;
+pub const DIAG_WORDS: u32 = 39;
 
 impl Diag {
     pub fn from_words(w: &[u32]) -> Option<Diag> {
@@ -100,6 +103,8 @@ impl Diag {
             wdg_missing: x(30),
             pvd_count: x(31),
             pvd_ms: x(32),
+            msp_free: x(33),
+            msp_size: x(34),
         })
     }
     pub fn valid(&self) -> bool {
@@ -155,7 +160,7 @@ mod tests {
         assert!(d.error_name().contains("стека"));
         assert!(d.has_counters());
         // an older record: counters read as zero
-        w.resize(33, 7);
+        w.resize(39, 7);
         w[0] = DIAG_MAGIC;
         let new = Diag::from_words(&w).unwrap();
         assert_eq!((new.wdg_missing, new.pvd_count), (7, 7));

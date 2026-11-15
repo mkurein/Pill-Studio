@@ -237,6 +237,9 @@ fn region_card(ui: &mut egui::Ui, sh: &Shared, st: &mut St, title: &str, base: u
                     used_end,
                     fmt::bytes(estack.saturating_sub(used_end))
                 );
+                if let Some((_, st)) = sh.st.stats {
+                    s += &format!(" Пик использования с загрузки: {} из {} Б.", st.msp_size - st.msp_free.min(st.msp_size), st.msp_size);
+                }
                 if let Some(m) = msp.filter(|m| *m <= estack && *m > base) {
                     s += &format!(" Сейчас MSP = 0x{:08X}: занято стеком {} Б.", m, estack - m);
                 }

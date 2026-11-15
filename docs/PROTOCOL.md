@@ -47,6 +47,7 @@ ID_BU (0x01) | STATUS | PAYLOAD... | CRC_L | CRC_H
 | | 0x02 | 64 B pattern @ 0x7F00, verify, restore | mismatches, first idx, expected, got |
 | 0x03 STATUS | — | — | 56 B `status_reply_t` (LE), см. ниже |
 | 0x04 TASKS | — | — | задачи FreeRTOS, см. ниже |
+| 0x05 STATS | — | — | 24 B: главный стек и счётчики, см. ниже |
 | 0x0F RESET | — | ответ, затем `NVIC_SystemReset()` | — |
 | 0x70 LED | 0x00 | PC13 = SET (LED off, active-low), ручной режим | — |
 | | 0x01 | PC13 = RESET (LED on), ручной режим | — |
@@ -69,11 +70,16 @@ TASKS: `run_us` (u32, общее время, мкс) · `count` (u8, не бол
 `run_us` (u32, время задачи, мкс). Счётчики времени переполняются через ~71 мин —
 доля процессора считается по разнице двух ответов. Прошивка до этой команды отвечает UNKNOWN_CMD.
 
-`g_diag` (по SWD, 33 слова, `DIAG_MAGIC` 0xD1A60004): к прежним 24 словам добавлены
+STATS: `msp_free`, `msp_size` (u16, байты: нетронутая часть и размер отслеживаемой области
+главного стека) · u32 с загрузки: `ctx_switches`, `irq_systick`, `irq_tick` (TIM1), `irq_usart1`,
+`pvd_count`. Частота считается по разнице двух ответов.
+
+`g_diag` (по SWD, 39 слов, `DIAG_MAGIC` 0xD1A60005): к прежним 24 словам добавлены
 `fault_line` (строка сработавшего `configASSERT`, имя файла — в `fault_task`),
 `rst_soft, rst_pin, rst_power, rst_wdg` (сбросы по причинам с подачи питания) и
 `queue_peak` (максимум байт в `uartQueue` за загрузку), `wdg_missing` (маска задач, переставших
-отмечаться: 1 defaultTask, 2 LedTask, 4 Uart1Task), `pvd_count`, `pvd_ms` (просадки ниже 2.9 В).
+отмечаться: 1 defaultTask, 2 LedTask, 4 Uart1Task), `pvd_count`, `pvd_ms` (просадки ниже 2.9 В), `msp_free`, `msp_size`, `ctx_switches`,
+`irq_systick`, `irq_tick`, `irq_usart1`.
 Запись о сбое хранится до команды FAULT 0 или потери питания; `PREV_FAULT` печатается при каждом старте.
 
 ## Examples (hex)

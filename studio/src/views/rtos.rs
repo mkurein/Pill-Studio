@@ -34,6 +34,9 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 if !sh.st.tasks_missing {
                     sh.send(vec![proto::CMD_TASKS]);
                 }
+                if !sh.st.stats_missing {
+                    sh.send(vec![proto::CMD_STATS]);
+                }
             }
             if sh.swd_ok() && ui.button("Прочитать g_diag по SWD").clicked() {
                 sh.job(Job::ReadDiag);
@@ -105,6 +108,10 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 para(ui, &p, "Из кучи выделены: стеки трёх задач (3.5 КБ) и задач ядра, их TCB, очередь uartQueue (100 Б) и мьютекс лога. Во время работы память не выделяется — график должен быть ровным. Рост «занято» = утечка.");
             });
         });
+        if let Some((t, s)) = sh.st.stats {
+            ui.add_space(8.0);
+            card(ui, &p, "Прерывания и главный стек (команда STATS)", |ui| activity(ui, sh, t, &s));
+        }
         ui.add_space(8.0);
         plots(ui, sh, st);
         if let Some(d) = &sh.st.diag {
@@ -119,6 +126,10 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                         ui.end_row();
                         kv(ui, &p, "сбросов с подачи питания", format!("программных {} · NRST {} · просадок питания {} · сторожевых {}", d.rst_soft, d.rst_pin, d.rst_power, d.rst_wdg));
                         kv(ui, &p, "пик очереди uartQueue", format!("{} из 100 байт", d.queue_peak));
+                        if d.msp_size > 0 {
+                            ui.end_row();
+                            kv(ui, &p, "главный стек (MSP), пик", format!("{} из {} Б", d.msp_size.saturating_sub(d.msp_free), d.msp_size));
+                        }
                     }
                 });
             });
@@ -246,4 +257,47 @@ fn live_tasks(ui: &mut egui::Ui, sh: &Shared, t: &proto::Tasks) {
         &p,
         "Состояние — на момент ответа: «выполняется» всегда у задачи UART, она и отвечает. Время — доля между двумя последними опросами. Стек: меньше 128 Б свободно — пора увеличивать. Имена обрезаны до 8 символов.",
     );
+}
+
+/// Interrupt counters with their rate, task switches and the main-stack
+/// high-water mark.
+fn activity(ui: &mut egui::Ui, sh: &Shared, t: f64, s: &proto::Stats) {
+    let p = sh.pal;
+    let prev = sh.st.stats_prev.filter(|(t0, _)| t - t0 > 0.2);
+    ui.columns(2, |cols| {
+        let ui = &mut cols[0];
+        egui::Grid::new("irq_stats").num_columns(3).striped(true).spacing([16.0, 4.0]).show(ui, |ui| {
+            for h in ["Источник", "Всего с загрузки", "В секунду"] {
+                ui.label(RichText::new(h).strong().color(p.fg2));
+            }
+            ui.end_row();
+            let old = prev.map(|(_, o)| o.rows());
+            for (i, (name, what, total)) in s.rows().iter().enumerate() {
+                ui.label(RichText::new(*name).monospace().strong()).on_hover_text(*what);
+                ui.label(RichText::new(total.to_string()).monospace());
+                match (prev, &old) {
+                    (Some((t0, _)), Some(o)) => {
+                        let rate = total.wrapping_sub(o[i].2) as f64 / (t - t0);
+                        // both ticks must run at 1 kHz; anything else is a fault of the clock setup
+                        let off = i < 2 && !(900.0..1100.0).contains(&rate);
+                        ui.label(RichText::new(format!("{rate:.0}")).monospace().color(if off { p.err } else { p.fg }));
+                    }
+                    _ => {
+                        ui.label(RichText::new("ждём второй ответ").small().color(p.muted));
+                    }
+                }
+                ui.end_row();
+            }
+        });
+        let ui = &mut cols[1];
+        let (size, free) = (s.msp_size.max(1) as f32, s.msp_free as f32);
+        let used = size - free;
+        ui.label("Главный стек (MSP): пик использования");
+        gauge(ui, &p, used / size, &format!("{used:.0} из {size:.0} Б, не тронуто {free:.0} Б"), level(&p, used / size), ui.available_width().min(360.0));
+        hint(
+            ui,
+            &p,
+            "На этом стеке работают все прерывания и main() до запуска задач. Прошивка при старте заполняет область меткой и считает, сколько осталось нетронутым. 0 Б — стек вышел за отведённую область.",
+        );
+    });
 }

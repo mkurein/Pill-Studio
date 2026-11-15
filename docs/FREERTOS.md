@@ -71,6 +71,16 @@ IWDG от LSI, /64, reload 2500: ~4 с на F1, ~5 с на F4 (LSI неточе�
 Две секунды без отметки — маска пропавших пишется в `g_diag.wdg_missing`. При остановке
 ядра отладчиком таймер заморожен (`DBGMCU`). Новая задача = новый бит `DIAG_WDG_*` (ADR-018).
 
+## Main stack and interrupt counters
+
+`diag_msp_fill()` — первая строка `main()`: последние `_Min_Stack_Size` (1 КБ) под `_estack`
+заполняются меткой 0xA5A5A5A5. На MSP работают `main()` до планировщика и все прерывания;
+`diag_msp_free()` считает нетронутую часть (`g_diag.msp_free`, обновляется раз в секунду).
+0 Б = стек вышел за область. Счётчики: `traceTASK_SWITCHED_IN` → `ctx_switches`,
+`traceTASK_INCREMENT_TICK` → `irq_systick` (оба в `FreeRTOSConfig.h`), `irq_tick` и
+`irq_usart1` — в USER CODE обработчиков `stm32f*_it.c`. Новое прерывание — свой счётчик
+там же. Команда STATS (0x05) отдаёт всё по UART.
+
 ## Run-time stats
 
 `configGENERATE_RUN_TIME_STATS = 1`. Счётчик — `diag_runtime_us()`: тик HAL (TIM1, 1 кГц)

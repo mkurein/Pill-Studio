@@ -1,7 +1,7 @@
 [package]
 name = "pill-studio"
 description = "Pill Studio — отладочная студия для Blue Pill (STM32F103C8T) и Black Pill (STM32F411CEU) + FreeRTOS: справочник MCU, плата, UART-протокол, RTOS-монитор, SWD"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "MIT"
 

@@ -162,6 +162,10 @@ pub struct State {
     pub tasks_prev: Option<Tasks>,
     /// The firmware answered UNKNOWN_CMD to TASKS: it is older than the command.
     pub tasks_missing: bool,
+    /// Last STATS reply with its time, and the one before (rates = difference).
+    pub stats: Option<(f64, Stats)>,
+    pub stats_prev: Option<(f64, Stats)>,
+    pub stats_missing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -461,6 +465,10 @@ impl Eng {
             if !self.st.tasks_missing && self.proto.is_some() {
                 let r = self.transact(vec![CMD_TASKS], false, true);
                 self.st.tasks_missing = r.is_some_and(|r| r.status == ST_UNKNOWN_CMD);
+            }
+            if !self.st.stats_missing && self.proto.is_some() {
+                let r = self.transact(vec![CMD_STATS], false, true);
+                self.st.stats_missing = r.is_some_and(|r| r.status == ST_UNKNOWN_CMD);
             }
         }
         // SWD liveness
@@ -896,6 +904,13 @@ impl Eng {
                     self.out.samples.push(Sample { t, st: s });
                 }
             }
+            Some(CMD_STATS) => {
+                if let Some(s) = Stats::decode(&r.payload) {
+                    let rebooted = self.st.stats.is_some_and(|(_, o)| s.irq_systick < o.irq_systick);
+                    self.st.stats_prev = if rebooted { None } else { self.st.stats.take() };
+                    self.st.stats = Some((self.now(), s));
+                }
+            }
             Some(CMD_TASKS) => {
                 if let Some(t) = Tasks::decode(&r.payload) {
                     // a reboot restarts the counters: the old sample is no base for a share
@@ -1229,6 +1244,9 @@ impl Eng {
                     self.st.tasks = None;
                     self.st.tasks_prev = None;
                     self.st.tasks_missing = false;
+                    self.st.stats = None;
+                    self.st.stats_prev = None;
+                    self.st.stats_missing = false;
                     let r = self.transact(vec![CMD_PING], false, false);
                     match r {
                         Some(_) => {
@@ -1248,6 +1266,7 @@ impl Eng {
                 self.proto = Some(Proto::Sim);
                 self.st.proto = Some("виртуальная плата".into());
                 self.st.tasks_missing = false;
+                self.st.stats_missing = false;
                 self.transact(vec![CMD_PING], false, false);
                 self.st.polling = true;
                 self.transact(vec![CMD_STATUS], false, false);

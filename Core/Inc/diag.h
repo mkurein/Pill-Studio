@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#define DIAG_MAGIC        0xD1A60004u
+#define DIAG_MAGIC        0xD1A60005u
 #define DIAG_FAULT_MAGIC  0xFA017EDu
 
 /* Error codes stored in g_diag.error_code */
@@ -70,6 +70,16 @@ typedef struct {
     uint32_t wdg_missing;    /* DIAG_WDG_* tasks that stopped checking in    */
     uint32_t pvd_count;      /* supply dipped below 2.9 V (since power-on)   */
     uint32_t pvd_ms;         /* HAL tick of the last dip                     */
+
+    /* Main stack (MSP: interrupts and main() before the scheduler) */
+    uint32_t msp_free;       /* bytes of the watched area never used         */
+    uint32_t msp_size;       /* watched area below _estack (_Min_Stack_Size) */
+
+    /* Activity since boot */
+    uint32_t ctx_switches;   /* task switches (traceTASK_SWITCHED_IN)        */
+    uint32_t irq_systick;    /* FreeRTOS ticks (SysTick)                     */
+    uint32_t irq_tick;       /* HAL tick timer (TIM1 update)                 */
+    uint32_t irq_usart1;     /* USART1 interrupts (bytes and errors)         */
 } diag_t;
 
 /* Tasks watched by the watchdog supervisor */
@@ -88,6 +98,8 @@ void diag_wdg_start(void);            /* IWDG, about 4-5 s; frozen while a debug
 void diag_wdg_alive(uint32_t task);   /* a task says it is running (DIAG_WDG_*)                  */
 void diag_wdg_supervise(void);        /* once a second: feed IWDG only if every task checked in  */
 void diag_pvd_start(void);            /* PVD at 2.9 V: interrupt counts supply dips               */
+void diag_msp_fill(void);             /* first thing in main(): mark the unused main stack        */
+uint32_t diag_msp_free(void);         /* bytes of the marked area still untouched                 */
 void diag_fault_clear(void);          /* forget the recorded fault                                */
 void diag_fault_entry(uint32_t code, const uint32_t *sp, uint32_t from_psp);
 void diag_puts_raw(const char *s);   /* polling USART3 output, safe in faults */

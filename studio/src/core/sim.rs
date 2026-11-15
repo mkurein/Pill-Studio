@@ -247,6 +247,19 @@ impl SimBoard {
                 self.heap_used_peak = self.heap_used_peak.max(16);
                 Self::reply(ST_OK, &self.status().encode())
             }
+            CMD_STATS => {
+                let up = self.uptime_ms();
+                let s = Stats {
+                    msp_free: 416,
+                    msp_size: 1024,
+                    ctx_switches: up / 70 + self.rx_frames * 2,
+                    irq_systick: up,
+                    irq_tick: up + 3,
+                    irq_usart1: self.rx_frames * 3 + self.rx_crc_err * 3 + self.uart_err,
+                    pvd_count: 0,
+                };
+                Self::reply(ST_OK, &s.encode())
+            }
             CMD_TASKS => {
                 // mostly idle; the UART task's share grows with the frames it handled
                 let up = self.uptime_ms().wrapping_mul(1000);

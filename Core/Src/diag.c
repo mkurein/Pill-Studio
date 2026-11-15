@@ -34,6 +34,29 @@ static void put_hex(const char *name, uint32_t v)
     diag_puts_raw(buf);
 }
 
+/* ---- main stack high-water mark ------------------------------------------
+ * The last _Min_Stack_Size bytes below _estack are filled with a pattern at
+ * the start of main(). MSP serves main() until the scheduler starts and every
+ * interrupt after that; what is still pattern was never used. */
+extern uint32_t _estack;
+extern char _Min_Stack_Size[];          /* linker symbol: its address is the size */
+#define MSP_PATTERN 0xA5A5A5A5u
+
+void diag_msp_fill(void)
+{
+    uint32_t *lo = &_estack - (uint32_t)(uintptr_t)_Min_Stack_Size / 4u;
+    uint32_t *sp = (uint32_t *)__get_MSP() - 8;      /* keep clear of the live frame */
+    for (uint32_t *p = lo; p < sp; p++) *p = MSP_PATTERN;
+}
+
+uint32_t diag_msp_free(void)
+{
+    const uint32_t *lo = &_estack - (uint32_t)(uintptr_t)_Min_Stack_Size / 4u;
+    const uint32_t *p = lo;
+    while (p < &_estack && *p == MSP_PATTERN) p++;
+    return (uint32_t)(p - lo) * 4u;
+}
+
 void diag_boot(uint32_t reset_cause)
 {
     if (g_diag.magic != DIAG_MAGIC) {
@@ -54,6 +77,9 @@ void diag_boot(uint32_t reset_cause)
     g_diag.uart_err = g_diag.queue_full = g_diag.last_cmd = 0;
     g_diag.fram_ok = g_diag.fram_fail = 0;
     g_diag.queue_peak = 0;
+    g_diag.ctx_switches = g_diag.irq_systick = g_diag.irq_tick = g_diag.irq_usart1 = 0;
+    g_diag.msp_size = (uint32_t)(uintptr_t)_Min_Stack_Size;
+    g_diag.msp_free = diag_msp_free();
 }
 
 void diag_fault(uint32_t code, const uint32_t *frame, const char *task)
@@ -144,6 +170,7 @@ void diag_wdg_alive(uint32_t task)
 void diag_wdg_supervise(void)
 {
     static uint32_t misses;
+    g_diag.msp_free = diag_msp_free();
     diag_wdg_alive(DIAG_WDG_DEFAULT);
     uint32_t pm = __get_PRIMASK();
     __disable_irq();

@@ -261,6 +261,16 @@ static void handle_frame(const uint8_t *cmd, uint16_t len)
         break;
     }
 
+    case CMD_STATS: {
+        uint16_t msp[2] = { (uint16_t)diag_msp_free(), (uint16_t)g_diag.msp_size };
+        uint32_t c[5] = { g_diag.ctx_switches, g_diag.irq_systick, g_diag.irq_tick,
+                          g_diag.irq_usart1, g_diag.pvd_count };
+        memcpy(payload, msp, 4);
+        memcpy(payload + 4, c, 20);
+        plen = 24;
+        break;
+    }
+
     case CMD_TASKS: {
         /* run_time_us u32, count u8, then per task: name[8], state, priority,
          * stack_free u16 (bytes), run_time_us u32. At most 5 tasks fit a frame. */
@@ -363,6 +373,7 @@ void Uart1Task(void *pvParameters) {
 int main(void)
 {
   /* USER CODE BEGIN 1 */
+  diag_msp_fill();
   uint32_t reset_cause = RCC->CSR;
   RCC->CSR |= RCC_CSR_RMVF;          // Сброс флагов сброса
   diag_boot(reset_cause);

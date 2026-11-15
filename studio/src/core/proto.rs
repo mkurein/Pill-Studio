@@ -12,6 +12,7 @@ pub const CMD_PING: u8 = 0x01;
 pub const CMD_FRAM: u8 = 0x02;
 pub const CMD_STATUS: u8 = 0x03;
 pub const CMD_TASKS: u8 = 0x04;
+pub const CMD_STATS: u8 = 0x05;
 pub const CMD_RESET: u8 = 0x0F;
 pub const CMD_LED: u8 = 0x70;
 pub const CMD_LED_GET: u8 = 0x71;
@@ -78,6 +79,7 @@ pub fn describe_request(body: &[u8]) -> String {
         (Some(CMD_PING), _) => "PING — версия прошивки".into(),
         (Some(CMD_STATUS), _) => "STATUS — состояние RTOS".into(),
         (Some(CMD_TASKS), _) => "TASKS — задачи FreeRTOS".into(),
+        (Some(CMD_STATS), _) => "STATS — прерывания и главный стек".into(),
         (Some(CMD_RESET), _) => "RESET — программный сброс".into(),
         (Some(CMD_LED), Some(0)) => "LED выкл (PC13 = 1)".into(),
         (Some(CMD_LED), Some(1)) => "LED вкл (PC13 = 0)".into(),
@@ -124,6 +126,57 @@ pub fn decode_reply(raw: &[u8]) -> Decoded {
         return Decoded::Garbage("CRC ответа не сходится".into());
     }
     Decoded::Ok(Reply { id: raw[0], status: raw[1], payload: raw[2..raw.len() - 2].to_vec() })
+}
+
+/// STATS reply: main stack high-water mark and activity counters since boot.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Stats {
+    /// Bytes of the watched main-stack area never used, and the area's size.
+    pub msp_free: u16,
+    pub msp_size: u16,
+    pub ctx_switches: u32,
+    pub irq_systick: u32,
+    pub irq_tick: u32,
+    pub irq_usart1: u32,
+    pub pvd_count: u32,
+}
+
+impl Stats {
+    pub fn decode(p: &[u8]) -> Option<Stats> {
+        if p.len() != 24 {
+            return None;
+        }
+        let u = |i: usize| u32::from_le_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+        Some(Stats {
+            msp_free: u16::from_le_bytes([p[0], p[1]]),
+            msp_size: u16::from_le_bytes([p[2], p[3]]),
+            ctx_switches: u(4),
+            irq_systick: u(8),
+            irq_tick: u(12),
+            irq_usart1: u(16),
+            pvd_count: u(20),
+        })
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut v = self.msp_free.to_le_bytes().to_vec();
+        v.extend(self.msp_size.to_le_bytes());
+        for x in [self.ctx_switches, self.irq_systick, self.irq_tick, self.irq_usart1, self.pvd_count] {
+            v.extend(x.to_le_bytes());
+        }
+        v
+    }
+
+    /// (name, what, total) rows for the table, in a fixed order.
+    pub fn rows(&self) -> [(&'static str, &'static str, u32); 5] {
+        [
+            ("SysTick", "тик FreeRTOS, должен быть 1000 в секунду", self.irq_systick),
+            ("TIM1", "тик HAL, должен быть 1000 в секунду", self.irq_tick),
+            ("USART1", "принятые байты команд и ошибки линии", self.irq_usart1),
+            ("PVD", "просадки питания ниже 2.9 В", self.pvd_count),
+            ("переключения задач", "сколько раз планировщик сменил задачу", self.ctx_switches),
+        ]
+    }
 }
 
 /// One task of the TASKS reply.
@@ -378,6 +431,13 @@ mod tests {
         assert_eq!(frame(&[0x70, 0x00]), [0x70, 0x00, 0x24, 0x70]);
         assert_eq!(frame(&[0x02, 0x00]), [0x02, 0x00, 0x00, 0xD0]);
         assert_eq!(frame(&[0x01, 0x00]), [0x01, 0x00, 0x00, 0x20]);
+    }
+
+    #[test]
+    fn stats_round_trip() {
+        let s = Stats { msp_free: 416, msp_size: 1024, ctx_switches: 7, irq_systick: 1000, irq_tick: 1001, irq_usart1: 3, pvd_count: 1 };
+        assert_eq!(Stats::decode(&s.encode()), Some(s));
+        assert_eq!(Stats::decode(&[0; 23]), None);
     }
 
     #[test]

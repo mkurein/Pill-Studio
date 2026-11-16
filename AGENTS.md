@@ -50,6 +50,8 @@ Toolchain из STM32CubeIDE 1.17.0 должен быть в PATH
   репозиториях (кроме `#include` HAL) — правку переносить в оба.
 - Меняешь задачи / стеки / NVIC → обновить `docs/FREERTOS.md`.
 - Новое архитектурное решение → ADR в `docs/DECISIONS.md`.
+- Версия только через `tools/update_version.py` (источник `config/version.json`),
+  затем запись в `CHANGELOG.md` — см. `VERSION_MANAGEMENT.md` (ADR-020).
 
 ## Workflow
 

@@ -93,7 +93,8 @@ cargo run --release
 ## Сборка дистрибутива
 
 Команды для Windows (`setup.exe`) и macOS (`.dmg`) описаны в [BUILD.md](BUILD.md).
-История выпусков и смена номера версии описаны в [VERSION.md](../VERSION.md).
+История выпусков — [CHANGELOG.md](../CHANGELOG.md), смена номера версии —
+[VERSION_MANAGEMENT.md](../VERSION_MANAGEMENT.md).
 
 ## Проверки
 

@@ -74,5 +74,6 @@ Black Pill (`../F411CE`): те же модули, отличаются `main.c` 
 | [`tools/RUN.md`](../tools/RUN.md) | хост `uart_check.py` / `.sh` из PowerShell |
 | [`studio/`](../studio/README.md) | Pill Studio — GUI (Rust egui) для Blue Pill и Black Pill: плата, MCU, регистры по SWD, UART-протокол, RTOS-монитор, разбор сбоев, сборка/прошивка/автотест; ADR-014, ADR-016 |
 | [`studio/BUILD.md`](../studio/BUILD.md) | команды сборки студии: Windows (`setup.exe`) и macOS (`.dmg`) |
+| [`VERSION_MANAGEMENT.md`](../VERSION_MANAGEMENT.md) | версия: `config/version.json`, `tools/update_version.py`, порядок выпуска; история — [`CHANGELOG.md`](../CHANGELOG.md) |
 
 Если модели нужен кусок оттуда — давать раздел, не файл целиком.

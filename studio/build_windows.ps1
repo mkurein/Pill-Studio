@@ -9,6 +9,8 @@ Set-Location $PSScriptRoot
 $cargo = Get-Content Cargo.toml -Raw
 if ($cargo -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw "нет версии в Cargo.toml" }
 $v = $Matches[1]
+$src = (Get-Content ..\config\version.json -Raw -Encoding UTF8 | ConvertFrom-Json).app_info.version
+if ($src -ne $v) { throw "Cargo.toml ($v) расходится с config/version.json ($src): python tools/update_version.py sync" }
 Write-Host "Pill Studio v$v — сборка Windows" -ForegroundColor Cyan
 
 cargo test --locked -q

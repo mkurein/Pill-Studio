@@ -1,5 +1,7 @@
 # Pill Studio — primGPT для Blue Pill и Black Pill
 
+![Версия 0.4.1](https://img.shields.io/badge/версия-0.4.1-4f46e5?style=flat-square)
+
 Прошивка **primGPT** на FreeRTOS и отладочная студия **Pill Studio** для двух плат:
 
 | Плата | MCU | Где прошивка |
@@ -30,7 +32,8 @@ Pill Studio выбрать плату в шапке (или студия сам�
 Windows и CubeIDE: [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md),
 Cursor — [docs/guides/CURSOR_BEGIN.md](docs/guides/CURSOR_BEGIN.md),
 сборка студии — [studio/BUILD.md](studio/BUILD.md).
-История выпусков и смена версии — [VERSION.md](VERSION.md).
+История выпусков — [CHANGELOG.md](CHANGELOG.md), смена версии —
+[VERSION_MANAGEMENT.md](VERSION_MANAGEMENT.md).
 
 ## Документация
 

@@ -163,3 +163,12 @@ Rule: каждая задача с циклом обязана отмечать�
 
 Reason: на одной плате можно собирать и отлаживать разные программы, включая
 проекты без UART и FreeRTOS.
+
+## ADR-020 — Единый источник версии
+
+Версия Pill Studio хранится в `config/version.json` и расставляется
+`tools/update_version.py` в `studio/Cargo.toml`, `studio/Cargo.lock` и значок
+`README.md`. Скрипты упаковки сверяют `Cargo.toml` с источником. История — `CHANGELOG.md`.
+Прошивка Blue Pill по-прежнему берёт строку из `git describe` (метка `vX.Y.Z`).
+Reason: номер жил в нескольких файлах и правился руками; так же устроен репозиторий DDS.
+Rule: версию менять только через `tools/update_version.py`, затем `status` и запись в `CHANGELOG.md`.

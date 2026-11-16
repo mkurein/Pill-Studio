@@ -26,6 +26,9 @@
 - [x] **T14** Флажок открытия Cursor в SWD-отладке, выпуск Pill Studio 0.4.0
   и порядок смены версии в `VERSION.md`.
 
+- [x] **T15** Единый источник версии (ADR-020): `config/version.json`,
+  `tools/update_version.py`, `VERSION_MANAGEMENT.md`, `CHANGELOG.md` вместо `VERSION.md`.
+
 ## Done in branch hil-studio (2026-11)
 
 T1–T7 закрыты: см. ADR-011..013, PROTOCOL.md.

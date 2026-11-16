@@ -40,11 +40,16 @@ TEST_CRATES = [CRATE]
 
 
 def version() -> str:
-    """Версия — из Cargo.toml студии."""
+    """Версия — из Cargo.toml студии; должна совпадать с config/version.json."""
+    import json
     import tomllib
 
     cargo = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
-    return cargo["package"]["version"]
+    v = cargo["package"]["version"]
+    src = json.loads((ROOT.parent / "config" / "version.json").read_text(encoding="utf-8"))["app_info"]["version"]
+    if v != src:
+        fail(f"Cargo.toml ({v}) расходится с config/version.json ({src}): python3 tools/update_version.py sync")
+    return v
 
 
 def make_icns() -> None:

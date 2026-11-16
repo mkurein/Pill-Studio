@@ -4,8 +4,9 @@ Pill Studio — отладочная программа для плат Blue Pil
 Исходники лежат в папке `studio/` этого репозитория, крейт называется `pill-studio`.
 Прошивка собирается отдельно: Blue Pill — из корня этого репозитория (`make` или `make -C Debug all -j8`), Black Pill — в репозитории F411CE.
 
-Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml`.
-Порядок смены номера и история выпусков описаны в [VERSION.md](../VERSION.md).
+Все команды ниже запускаются из `studio`. Версия берётся из поля `version` в `studio/Cargo.toml`;
+если оно расходится с `config/version.json`, скрипты упаковки останавливаются.
+Смена номера — [VERSION_MANAGEMENT.md](../VERSION_MANAGEMENT.md), история — [CHANGELOG.md](../CHANGELOG.md).
 Нужен Rust 1.88 или новее.
 
 ## Windows

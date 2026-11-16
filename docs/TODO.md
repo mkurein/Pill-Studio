@@ -23,6 +23,9 @@
   файлов и функций ELF, переход к строке по PC. На Blue Pill через ST-Link
   проверены поиск LedTask и автоматический переход в tasks.c при остановке.
 
+- [x] **T14** Флажок открытия Cursor в SWD-отладке, выпуск Pill Studio 0.4.0
+  и порядок смены версии в `VERSION.md`.
+
 ## Done in branch hil-studio (2026-11)
 
 T1–T7 закрыты: см. ADR-011..013, PROTOCOL.md.

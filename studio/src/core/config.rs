@@ -125,7 +125,7 @@ impl Default for Config {
             log_port: String::new(),
             poll_ms: 1000,
             dark: true,
-            editor_follow: true,
+            editor_follow: false,
             editor_cmd: String::new(),
             recent: vec![],
             projects: BTreeMap::new(),
@@ -459,6 +459,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editor_follow_defaults_off_and_respects_saved_preference() {
+        let saved = |json| serde_json::from_str::<Config>(json).unwrap();
+        assert_eq!(saved(r#"{"editor_cmd":"cursor"}"#).editor(), None);
+        assert_eq!(saved(r#"{"editor_cmd":"cursor","editor_follow":true}"#).editor().as_deref(), Some("cursor"));
+    }
 
     #[test]
     fn uart_tools_are_selected_per_firmware_project() {

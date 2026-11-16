@@ -1,8 +1,8 @@
 ﻿; Pill Studio — установщик Inno Setup 6. Собирает build_windows.ps1.
-; UTF-8 с BOM. Версия: ISCC /DAppVersion=0.3.2 /Orelease\v0.3.2 /Fимя
+; UTF-8 с BOM. build_windows.ps1 передаёт AppVersion из Cargo.toml.
 
 #ifndef AppVersion
-  #define AppVersion "0.3.2"
+  #error AppVersion is required. Run build_windows.ps1.
 #endif
 
 #define AppName "Pill Studio"

@@ -2,7 +2,7 @@
 //! breakpoints), fault registers, symbols and the OpenOCD console.
 
 use super::sources;
-use crate::app::Shared;
+use crate::app::{Act, Shared};
 use crate::core::debug::{self, StepKind};
 use crate::core::elf;
 use crate::core::openocd::cfsr_ru;
@@ -196,6 +196,18 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                     }
                 }
             });
+            let mut editor_follow = sh.cfg.editor_follow;
+            let editor_label = if sh.cfg.editor_cmd.trim().is_empty() {
+                "Открывать Cursor при остановке"
+            } else {
+                "Открывать редактор при остановке"
+            };
+            if ui.checkbox(&mut editor_follow, editor_label)
+                .on_hover_text("При остановке ядра открывает текущую строку во внешнем редакторе. Применяется сразу.")
+                .changed()
+            {
+                sh.act(Act::EditorFollow(editor_follow));
+            }
             if let Some(s) = &sh.st.swd {
                 let id = sh.st.idcode.map(|v| format!("IDCODE 0x{v:08X}")).unwrap_or_default();
                 ui.label(

@@ -30,6 +30,7 @@ Pill Studio выбрать плату в шапке (или студия сам�
 Windows и CubeIDE: [docs/guides/QUICKSTART.md](docs/guides/QUICKSTART.md),
 Cursor — [docs/guides/CURSOR_BEGIN.md](docs/guides/CURSOR_BEGIN.md),
 сборка студии — [studio/BUILD.md](studio/BUILD.md).
+История выпусков и смена версии — [VERSION.md](VERSION.md).
 
 ## Документация
 

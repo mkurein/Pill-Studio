@@ -13,6 +13,14 @@ pub struct St {
     ocd_args: String,
 }
 
+impl St {
+    pub fn set_editor_follow(&mut self, enabled: bool) {
+        if let Some(draft) = &mut self.draft {
+            draft.editor_follow = enabled;
+        }
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
     let p = sh.pal;
     let mut draft = st.draft.take().unwrap_or_else(|| sh.cfg.clone());

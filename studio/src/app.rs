@@ -60,6 +60,7 @@ pub enum Act {
     Go(View),
     Toast(Tone, String),
     SaveCfg(Box<Config>),
+    EditorFollow(bool),
     /// Switch the studio to another board (profile, SVD, project, ports).
     Board(BoardId),
     /// Make this firmware folder the active project; switches the board when
@@ -257,6 +258,12 @@ impl App {
             Act::Go(v) if !v.requires_primgpt() || self.sh.primgpt() => self.sh.view = v,
             Act::Go(_) => {},
             Act::Toast(t, s) => self.toast(t, s),
+            Act::EditorFollow(enabled) => {
+                self.sh.cfg.editor_follow = enabled;
+                self.worker.send(Job::Editor(self.sh.cfg.editor()));
+                self.vs.settings.set_editor_follow(enabled);
+                self.sh.cfg.save();
+            }
             Act::SaveCfg(c) => {
                 if c.poll_ms != self.sh.cfg.poll_ms {
                     self.worker.send(Job::PollMs(c.poll_ms));

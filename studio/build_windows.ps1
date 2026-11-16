@@ -11,9 +11,9 @@ if ($cargo -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw "нет верси�
 $v = $Matches[1]
 Write-Host "Pill Studio v$v — сборка Windows" -ForegroundColor Cyan
 
-cargo test -q
+cargo test --locked -q
 if ($LASTEXITCODE -ne 0) { throw "тесты не прошли" }
-cargo build --release
+cargo build --locked --release
 if ($LASTEXITCODE -ne 0) { throw "сборка не удалась" }
 
 $out = "release\v$v"

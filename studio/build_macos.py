@@ -143,13 +143,13 @@ def main() -> None:
 
     if not a.skip_tests:
         info("тесты")
-        run(["cargo", "test", "-q"] + [x for c in TEST_CRATES for x in ("-p", c)])
+        run(["cargo", "test", "--locked", "-q"] + [x for c in TEST_CRATES for x in ("-p", c)])
 
     staging = ROOT / "target" / "egui-bundle"
     shutil.rmtree(staging, ignore_errors=True)
     staging.mkdir(parents=True)
     binary = staging / BIN
-    cmd = ["cargo", "build", "--release", "-p", CRATE]
+    cmd = ["cargo", "build", "--locked", "--release", "-p", CRATE]
     if a.universal:
         run(["rustup", "target", "add", "aarch64-apple-darwin", "x86_64-apple-darwin"])
         for t in ("aarch64-apple-darwin", "x86_64-apple-darwin"):

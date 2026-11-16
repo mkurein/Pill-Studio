@@ -2,7 +2,7 @@
 //! Views get `&Shared` and queue `Act`s, which run after the frame.
 
 use crate::core::boards::{self, BoardId};
-use crate::core::config::Config;
+use crate::core::config::{Config, FirmwareProfile};
 use crate::core::link::{self, PortInfo};
 use crate::core::svd::{self, Peripheral};
 use crate::theme::{self, Pal};
@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Overview,
+    PrimGpt,
     Board,
     Mcu,
     Memory,
@@ -31,9 +32,15 @@ pub enum View {
     Settings,
 }
 
+impl View {
+    pub fn requires_primgpt(self) -> bool {
+        matches!(self, Self::PrimGpt | Self::Proto | Self::Rtos | Self::Log)
+    }
+}
+
 /// (view, icon, title, hint)
 pub const NAV: &[(View, &str, &str, &str)] = &[
-    (View::Overview, "◉", "Обзор", "подключения и главное о плате"),
+    (View::Overview, "◉", "Обзор", "проект, сборка, сверка и подключение ST-Link"),
     (View::Board, "▦", "Плата", "выводы, функции, что подключено"),
     (View::Mcu, "◫", "Контроллер", "структура, память, тактирование"),
     (View::Memory, "▤", "Память и векторы", "где лежит код и данные, таблица прерываний"),
@@ -42,7 +49,8 @@ pub const NAV: &[(View, &str, &str, &str)] = &[
     (View::Proto, "⇄", "UART-протокол", "команды, кадры, CRC, реакция платы"),
     (View::Rtos, "⟳", "FreeRTOS", "задачи, стеки, куча, счётчики"),
     (View::Log, "☰", "Лог", "текстовый лог прошивки"),
-    (View::Debug, "⚙", "SWD-отладка", "ядро, сбои, сборка, прошивка, автотест"),
+    (View::Debug, "⚙", "SWD-отладка", "ядро, исходники, переменные и точки останова"),
+    (View::PrimGpt, "◇", "primGPT", "UART, STATUS, симулятор и автотест"),
     (View::Learn, "✎", "Справочник", "как устроен контроллер и этот проект"),
     (View::Settings, "⚒", "Настройки", "порты, OpenOCD, пути"),
 ];
@@ -57,6 +65,8 @@ pub enum Act {
     /// Make this firmware folder the active project; switches the board when
     /// the folder belongs to the other one.
     Project(String),
+    FirmwareProfile(FirmwareProfile),
+    ProjectElf(String),
     RefreshPorts,
     Theme(bool),
     OpenPeriph(String),
@@ -71,6 +81,7 @@ pub struct Shared {
     pub lines: VecDeque<LogLine>,
     pub samples: VecDeque<Sample>,
     pub cfg: Config,
+    pub profile: FirmwareProfile,
     pub ports: Vec<PortInfo>,
     pub pal: Pal,
     pub view: View,
@@ -101,11 +112,15 @@ impl Shared {
     pub fn swd_ok(&self) -> bool {
         self.st.swd.is_some()
     }
+    pub fn primgpt(&self) -> bool {
+        self.profile == FirmwareProfile::PrimGpt
+    }
 }
 
 #[derive(Default)]
 pub struct ViewState {
     pub overview: views::overview::St,
+    pub primgpt: views::primgpt::St,
     pub board: views::board::St,
     pub mcu: views::mcu::St,
     pub memory: views::memory::St,
@@ -130,13 +145,16 @@ pub struct App {
     vs: ViewState,
     worker: Worker,
     toasts: Vec<ToastMsg>,
-    busy_since: Option<Instant>,
     shots: Option<crate::shots::Shots>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext) -> App {
-        let mut cfg = Config::load();
+        let mut cfg = if std::env::var_os("APP_SHOTS").is_some() {
+            Config::default()
+        } else {
+            Config::load()
+        };
         // screenshot tour of another board: APP_BOARD=blackpill (not saved)
         if let Some(id) = std::env::var("APP_BOARD").ok().and_then(|s| BoardId::ALL.into_iter().find(|b| b.key() == s)) {
             cfg.switch_board(id);
@@ -146,8 +164,10 @@ impl App {
         theme::apply(&cc.egui_ctx, &pal);
         let svd = Arc::new(svd::parse_board(boards::cur()));
         let worker = Worker::spawn(cc.egui_ctx.clone(), svd.clone(), &cfg);
-        let shots = crate::shots::Shots::from_env();
-        if shots.is_some() {
+        let profile = cfg.firmware_profile();
+        let primgpt = profile == FirmwareProfile::PrimGpt;
+        let shots = crate::shots::Shots::from_env(primgpt);
+        if shots.is_some() && primgpt {
             // demo data for screenshots: the virtual board on every link
             worker.send(Job::ProtoSim);
             worker.send(Job::LogSim);
@@ -163,6 +183,7 @@ impl App {
                 samples: VecDeque::new(),
                 ports: link::list_ports(),
                 cfg,
+                profile,
                 pal,
                 view: View::Overview,
                 busy: false,
@@ -171,7 +192,6 @@ impl App {
             vs: ViewState::default(),
             worker,
             toasts: vec![],
-            busy_since: None,
             shots,
         }
     }
@@ -202,13 +222,7 @@ impl App {
             }
             self.sh.cfg.save();
         }
-        let busy = self.worker.busy() || self.sh.st.job.is_some();
-        self.busy_since = match (busy, self.busy_since) {
-            (true, None) => Some(Instant::now()),
-            (true, s) => s,
-            (false, _) => None,
-        };
-        self.sh.busy = self.busy_since.is_some_and(|t| t.elapsed() > Duration::from_millis(150));
+        self.sh.busy = self.worker.busy() || self.sh.st.job.is_some();
     }
 
     fn toast(&mut self, tone: Tone, text: String) {
@@ -219,25 +233,29 @@ impl App {
         }
     }
 
-    /// The board changed in the config: its SVD, links closed, views reset.
-    fn board_changed(&mut self) {
-        let svd = Arc::new(svd::parse_board(boards::cur()));
-        self.sh.svd = svd.clone();
-        self.worker.send(Job::Board(svd, self.sh.cfg.project_dir.clone()));
+    fn project_changed(&mut self, board_changed: bool) {
+        self.sh.profile = self.sh.cfg.firmware_profile();
+        let cfg = Box::new(self.sh.cfg.clone());
+        if board_changed {
+            let svd = Arc::new(svd::parse_board(boards::cur()));
+            self.sh.svd = svd.clone();
+            self.worker.send(Job::Board(svd, cfg));
+        } else {
+            self.worker.send(Job::Project(cfg));
+        }
+        self.sh.view = View::Overview;
         self.vs = ViewState::default();
         self.sh.txns.clear();
         self.sh.lines.clear();
         self.sh.samples.clear();
         self.sh.st = State::default();
-        let b = boards::cur();
-        let proj = if self.sh.cfg.project_dir.is_empty() { "не найден — укажите в Настройках".to_string() } else { self.sh.cfg.project_dir.clone() };
-        self.toast(Tone::Info, format!("Плата: {} ({}). Проект: {}", b.board, b.chip, proj));
     }
 
     fn run(&mut self, ctx: &egui::Context, a: Act) {
         match a {
             Act::Job(j) => self.worker.send(*j),
-            Act::Go(v) => self.sh.view = v,
+            Act::Go(v) if !v.requires_primgpt() || self.sh.primgpt() => self.sh.view = v,
+            Act::Go(_) => {},
             Act::Toast(t, s) => self.toast(t, s),
             Act::SaveCfg(c) => {
                 if c.poll_ms != self.sh.cfg.poll_ms {
@@ -246,35 +264,56 @@ impl App {
                 if c.editor() != self.sh.cfg.editor() {
                     self.worker.send(Job::Editor(c.editor()));
                 }
-                let project = c.project_dir != self.sh.cfg.project_dir;
                 self.sh.cfg = *c;
-                if project {
-                    self.sh.cfg.touch_project();
-                    self.worker.send(Job::Project(self.sh.cfg.project_dir.clone()));
-                }
+                self.sh.cfg.touch_project();
                 self.sh.cfg.save();
             }
-            Act::Project(dir) => match self.sh.cfg.use_project(&dir) {
-                Err(e) => self.toast(Tone::Err, e),
-                Ok(true) => {
-                    self.sh.cfg.save();
-                    self.board_changed();
+            Act::Project(dir) => {
+                if self.worker.busy() || self.sh.st.job.is_some() {
+                    return;
                 }
-                Ok(false) => {
-                    self.sh.cfg.save();
-                    self.worker.send(Job::Project(self.sh.cfg.project_dir.clone()));
-                    self.toast(Tone::Info, format!("Проект: {}", self.sh.cfg.project_dir));
+                match self.sh.cfg.use_project(&dir) {
+                    Err(e) => self.toast(Tone::Err, e),
+                    Ok(board_changed) => {
+                        self.sh.cfg.save();
+                        self.project_changed(board_changed);
+                    }
                 }
-            },
+            }
+            Act::FirmwareProfile(profile) => {
+                if self.worker.busy() || self.sh.st.job.is_some() {
+                    return;
+                }
+                self.sh.cfg.projects.entry(self.sh.cfg.project_dir.clone()).or_default().profile = Some(profile);
+                self.sh.cfg.save();
+                self.sh.profile = profile;
+                self.sh.txns.clear();
+                self.sh.lines.clear();
+                self.sh.samples.clear();
+                self.vs.settings = Default::default();
+                self.vs.boot = Default::default();
+                self.vs.primgpt = Default::default();
+                self.worker.send(Job::Profile(profile));
+            }
+            Act::ProjectElf(path) => {
+                if self.worker.busy() || self.sh.st.job.is_some() {
+                    return;
+                }
+                self.sh.cfg.projects.entry(self.sh.cfg.project_dir.clone()).or_default().elf = path;
+                self.sh.cfg.save();
+                self.vs.settings = Default::default();
+                self.vs.debug = Default::default();
+                self.worker.send(Job::LoadElf(self.sh.cfg.elf_override()));
+            }
             Act::Board(id) => {
-                if id == self.sh.cfg.board {
+                if id == self.sh.cfg.board || self.worker.busy() || self.sh.st.job.is_some() {
                     return;
                 }
                 self.sh.cfg.touch_project();
                 self.sh.cfg.switch_board(id);
                 self.sh.cfg.touch_project();
                 self.sh.cfg.save();
-                self.board_changed();
+                self.project_changed(true);
             }
             Act::RefreshPorts => self.sh.ports = link::list_ports(),
             Act::Theme(dark) => {
@@ -321,20 +360,22 @@ impl App {
                         }
                     }
                     ui.add_space(12.0);
-                    let uart = sh.st.proto.as_deref();
-                    if chip(ui, &p, "UART1", uart.unwrap_or("нет"), uart.is_some()).clicked() {
-                        sh.act(Act::Go(View::Overview));
-                    }
-                    let log = sh.st.log.as_deref();
-                    let log_name = boards::cur().log_uart.replace("USART", "UART");
-                    if chip(ui, &p, &log_name, log.unwrap_or("нет"), log.is_some()).clicked() {
-                        sh.act(Act::Go(View::Log));
+                    if sh.primgpt() {
+                        let uart = sh.st.proto.as_deref();
+                        if chip(ui, &p, "UART1", uart.unwrap_or("нет"), uart.is_some()).clicked() {
+                            sh.act(Act::Go(View::PrimGpt));
+                        }
+                        let log = sh.st.log.as_deref();
+                        let log_name = boards::cur().log_uart.replace("USART", "UART");
+                        if chip(ui, &p, &log_name, log.unwrap_or("нет"), log.is_some()).clicked() {
+                            sh.act(Act::Go(View::Log));
+                        }
                     }
                     let swd = sh.st.swd.as_ref().map(|s| format!("{} · {}", s, sh.st.swd_state));
                     if chip(ui, &p, "SWD", swd.as_deref().unwrap_or("нет"), swd.is_some()).clicked() {
                         sh.act(Act::Go(View::Debug));
                     }
-                    if sh.st.sim_running()
+                    if sh.primgpt() && sh.st.sim_running()
                         && ui.button(RichText::new("Остановить симуляцию").color(p.err)).clicked()
                     {
                         sh.job(Job::SimStop);
@@ -349,9 +390,6 @@ impl App {
                             if let Some(j) = &sh.st.job {
                                 ui.label(RichText::new(j).color(p.warn));
                             }
-                        }
-                        if let Some(fw) = &sh.st.fw {
-                            ui.label(RichText::new(format!("прошивка: {}", fw)).color(p.fg2).small());
                         }
                     });
                 });
@@ -368,6 +406,9 @@ impl App {
             .show(ctx, |ui| {
                 let b = boards::cur();
                 for (v, icon, title, hint) in NAV {
+                    if v.requires_primgpt() && !sh.primgpt() {
+                        continue;
+                    }
                     let sel = sh.view == *v;
                     let title = match v {
                         View::Board => format!("{} {}", title, b.board),
@@ -386,7 +427,7 @@ impl App {
                     ui.hyperlink_to(RichText::new(b.repo).small(), format!("https://{}", b.repo));
                     ui.label(RichText::new("Developer Kurein MN").small().color(p.muted));
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).small().color(p.muted));
-                    if let Some(s) = sh.st.status {
+                    if let Some(s) = sh.st.status.filter(|_| sh.primgpt()) {
                         ui.label(
                             RichText::new(format!("аптайм {}", crate::fmt::uptime(s.uptime_ms)))
                                 .small()
@@ -450,6 +491,7 @@ impl eframe::App for App {
                 let vs = &mut self.vs;
                 match sh.view {
                     View::Overview => views::overview::show(ui, sh, &mut vs.overview),
+                    View::PrimGpt => views::primgpt::show(ui, sh, &mut vs.primgpt),
                     View::Board => views::board::show(ui, sh, &mut vs.board),
                     View::Mcu => views::mcu::show(ui, sh, &mut vs.mcu),
                     View::Memory => views::memory::show(ui, sh, &mut vs.memory),
@@ -478,6 +520,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.sh.cfg.save();
+        if self.shots.is_none() {
+            self.sh.cfg.save();
+        }
     }
 }

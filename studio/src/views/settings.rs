@@ -5,14 +5,12 @@ use crate::core::boards::{self, BoardId};
 use crate::core::config::Config;
 use crate::core::openocd::OcdConfig;
 use crate::widgets::*;
-use crate::worker::Job;
 use eframe::egui::{self, RichText};
 
 #[derive(Default)]
 pub struct St {
     draft: Option<Config>,
     ocd_args: String,
-    elf: String,
 }
 
 pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
@@ -39,17 +37,16 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui,
                 &p,
                 &format!(
-                    "У каждой платы свои папка проекта, команда сборки и порты — переключение их меняет. \
-                     Сейчас: OpenOCD {}, ELF build/{}, лог {} ({}), DEV_ID 0x{:03X}. \
+                    "У каждой платы свои проект и настройки. Сейчас: OpenOCD {}, DEV_ID 0x{:03X}. \
                      Если по SWD ответит чип другой платы, вверху появится кнопка переключения.",
-                    b.ocd_target, b.elf, b.log_uart, b.log_tx, b.dev_id
+                    b.ocd_target, b.dev_id
                 ),
             );
         });
         card(ui, &p, "Проект прошивки", |ui| {
             egui::Grid::new("set_proj").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
                 ui.label("Папка проекта");
-                ui.add(egui::TextEdit::singleline(&mut d.project_dir).desired_width(520.0));
+                ui.label(RichText::new(&d.project_dir).monospace());
                 ui.end_row();
                 ui.label("Команда сборки");
                 ui.add(egui::TextEdit::singleline(&mut d.build_cmd).desired_width(520.0));
@@ -58,13 +55,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
                 ui.add(egui::TextEdit::singleline(&mut d.toolchain_dir).hint_text("пусто = PATH; Windows: …\\STM32CubeIDE\\plugins\\…gnu-tools…\\tools\\bin").desired_width(520.0));
                 ui.end_row();
             });
-            hint(ui, &p, &format!("Команда выполняется в папке проекта. Здесь прошивка собирается корневым Makefile: «make -j8» → build/{}. Каталога Debug в репозитории нет. Если папка toolchain пустая, на Windows студия сама находит make и arm-none-eabi-gcc из STM32CubeIDE.", boards::cur().elf));
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut st.elf).hint_text("путь к .elf вручную").desired_width(420.0));
-                if ui.button("Загрузить ELF").clicked() && !st.elf.trim().is_empty() {
-                    sh.job(Job::LoadElf(st.elf.trim().into()));
-                }
-            });
+            hint(ui, &p, "Команда выполняется в папке проекта. Выбор папки и ELF находится в «Обзоре».");
         });
         ui.add_space(8.0);
         card(ui, &p, "OpenOCD (SWD)", |ui| {
@@ -118,27 +109,29 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             );
         });
         ui.add_space(8.0);
-        card(ui, &p, "Порты и опрос", |ui| {
-            egui::Grid::new("set_ports").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("UART1 по умолчанию");
-                ui.add(egui::TextEdit::singleline(&mut d.proto_port).desired_width(300.0));
-                ui.end_row();
-                ui.label("UART3 по умолчанию");
-                ui.add(egui::TextEdit::singleline(&mut d.log_port).desired_width(300.0));
-                ui.end_row();
-                ui.label("Период STATUS, мс");
-                ui.add(egui::DragValue::new(&mut d.poll_ms).range(200..=10_000));
-                ui.end_row();
+        if sh.primgpt() {
+            card(ui, &p, "Порты и опрос primGPT", |ui| {
+                egui::Grid::new("set_ports").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label("UART1 по умолчанию");
+                    ui.add(egui::TextEdit::singleline(&mut d.proto_port).desired_width(300.0));
+                    ui.end_row();
+                    ui.label(format!("{} по умолчанию", boards::cur().log_uart));
+                    ui.add(egui::TextEdit::singleline(&mut d.log_port).desired_width(300.0));
+                    ui.end_row();
+                    ui.label("Период STATUS, мс");
+                    ui.add(egui::DragValue::new(&mut d.poll_ms).range(200..=10_000));
+                    ui.end_row();
+                });
+                ui.label(RichText::new("Найденные порты:").color(p.fg2));
+                for port in &sh.ports {
+                    ui.label(RichText::new(format!("{}   {}", port.name, port.desc)).monospace().small());
+                }
+                if ui.small_button("⟳ Обновить").clicked() {
+                    sh.act(Act::RefreshPorts);
+                }
             });
-            ui.label(RichText::new("Найденные порты:").color(p.fg2));
-            for port in &sh.ports {
-                ui.label(RichText::new(format!("{}   {}", port.name, port.desc)).monospace().small());
-            }
-            if ui.small_button("⟳ Обновить").clicked() {
-                sh.act(Act::RefreshPorts);
-            }
-        });
-        ui.add_space(8.0);
+            ui.add_space(8.0);
+        }
         ui.horizontal(|ui| {
             if primary(ui, &p, "Сохранить").clicked() {
                 d.ocd.args = split_args(&st.ocd_args);

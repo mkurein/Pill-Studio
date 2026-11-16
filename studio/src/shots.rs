@@ -8,10 +8,10 @@ use eframe::egui::{self, ColorImage};
 use std::path::PathBuf;
 
 /// (view, dark theme): every screen dark, then every screen light.
-fn steps() -> Vec<(View, bool)> {
-    let mut v: Vec<_> = NAV.iter().map(|n| (n.0, true)).collect();
-    v.extend(NAV.iter().map(|n| (n.0, false)));
-    v
+fn steps(primgpt: bool) -> Vec<(View, bool)> {
+    [true, false].into_iter().flat_map(|dark| {
+        NAV.iter().filter(move |n| primgpt || !n.0.requires_primgpt()).map(move |n| (n.0, dark))
+    }).collect()
 }
 
 pub struct Shots {
@@ -19,18 +19,19 @@ pub struct Shots {
     idx: usize,
     frames: u32,
     pending: bool,
+    steps: Vec<(View, bool)>,
 }
 
 impl Shots {
-    pub fn from_env() -> Option<Shots> {
+    pub fn from_env(primgpt: bool) -> Option<Shots> {
         let dir = PathBuf::from(std::env::var_os("APP_SHOTS")?);
         std::fs::create_dir_all(&dir).ok()?;
-        Some(Shots { dir, idx: 0, frames: 0, pending: false })
+        Some(Shots { dir, idx: 0, frames: 0, pending: false, steps: steps(primgpt) })
     }
 
     /// The step to show now: (view, dark).
     pub fn current(&self) -> Option<(View, bool)> {
-        steps().get(self.idx).copied()
+        self.steps.get(self.idx).copied()
     }
 
     /// Call once per frame after drawing.

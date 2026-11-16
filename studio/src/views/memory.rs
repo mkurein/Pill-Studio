@@ -118,7 +118,7 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             "Где во Flash и в RAM лежит каждая функция и переменная этой сборки, и куда ядро переходит по сбросу и прерываниям.",
         );
         let Some(elf) = sh.st.elf.clone() else {
-            hint(ui, &p, "ELF не найден. Соберите прошивку: SWD-отладка → «Собрать».");
+            hint(ui, &p, "ELF не найден. Соберите прошивку или укажите ELF на «Обзоре».");
             return;
         };
         ui.horizontal(|ui| {

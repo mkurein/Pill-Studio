@@ -184,7 +184,7 @@ fn memory(ui: &mut egui::Ui, sh: &Shared) {
         });
         card(&mut cols[1], &p, "Заполнение памяти этой прошивкой (из ELF)", |ui| {
             let Some(elf) = &sh.st.elf else {
-                hint(ui, &p, "ELF не найден. Соберите прошивку (SWD-отладка → Собрать) или укажите проект в Настройках.");
+                hint(ui, &p, "ELF не найден. Соберите прошивку или укажите ELF на «Обзоре».");
                 return;
             };
             hint(ui, &p, &elf.path.display().to_string());

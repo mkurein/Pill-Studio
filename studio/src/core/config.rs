@@ -3,6 +3,7 @@
 use super::boards::{self, BoardId};
 use super::openocd::OcdConfig;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -16,6 +17,30 @@ pub struct Slot {
     pub build_cmd: String,
     pub proto_port: String,
     pub log_port: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirmwareProfile {
+    #[default]
+    Swd,
+    PrimGpt,
+}
+
+impl FirmwareProfile {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Swd => "Только SWD",
+            Self::PrimGpt => "primGPT",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectOptions {
+    pub profile: Option<FirmwareProfile>,
+    pub elf: String,
 }
 
 /// A firmware project used recently (any board): the switch list.
@@ -50,6 +75,14 @@ pub fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// Windows canonical paths can use a prefix that users and OpenOCD do not need.
+pub fn display_path(path: &str) -> Cow<'_, str> {
+    match path.strip_prefix(r"\\?\UNC\") {
+        Some(unc) => Cow::Owned(format!(r"\\{unc}")),
+        None => Cow::Borrowed(path.strip_prefix(r"\\?\").unwrap_or(path)),
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -73,6 +106,8 @@ pub struct Config {
     pub editor_cmd: String,
     /// Projects used recently, newest first.
     pub recent: Vec<Recent>,
+    /// Overrides by project folder, independent of the hardware profile.
+    pub projects: BTreeMap<String, ProjectOptions>,
     /// Build / flash / autotest runs, newest last.
     pub history: Vec<Run>,
 }
@@ -93,12 +128,32 @@ impl Default for Config {
             editor_follow: true,
             editor_cmd: String::new(),
             recent: vec![],
+            projects: BTreeMap::new(),
             history: vec![],
         }
     }
 }
 
 impl Config {
+    pub fn firmware_profile(&self) -> FirmwareProfile {
+        if let Some(profile) = self.projects.get(&self.project_dir).and_then(|p| p.profile) {
+            return profile;
+        }
+        // Recognize existing primGPT repositories on both boards. Unknown
+        // projects start with SWD, without opening or probing a serial port.
+        let root = Path::new(&self.project_dir);
+        let prim = !self.project_dir.is_empty()
+            && root.join("tools/hil.py").is_file()
+            && std::fs::read_to_string(root.join("Core/Inc/DataFile.h"))
+                .is_ok_and(|s| s.contains("CMD_PING") && s.contains("CMD_STATUS"));
+        if prim { FirmwareProfile::PrimGpt } else { FirmwareProfile::Swd }
+    }
+
+    pub fn elf_override(&self) -> Option<PathBuf> {
+        let path = &self.projects.get(&self.project_dir)?.elf;
+        (!path.is_empty()).then(|| Path::new(&self.project_dir).join(path))
+    }
+
     /// Select another board: the current project, ports and build command are
     /// stashed for the old board and the new board's ones come back.
     pub fn switch_board(&mut self, to: BoardId) {
@@ -152,7 +207,13 @@ impl Config {
         }
         let cmd = self.recent.iter().find(|r| r.dir == dir).map(|r| r.build_cmd.clone());
         self.project_dir = dir;
-        self.build_cmd = build_cmd_for(Path::new(&self.project_dir), &cmd.unwrap_or_else(|| self.build_cmd.clone()));
+        let root = Path::new(&self.project_dir);
+        let default = if !root.join("Makefile").is_file() && root.join("Debug/makefile").is_file() {
+            "make -C Debug all -j8"
+        } else {
+            "make -j8"
+        };
+        self.build_cmd = build_cmd_for(root, cmd.as_deref().unwrap_or(default));
         self.touch_project();
         Ok(switched)
     }
@@ -398,6 +459,26 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uart_tools_are_selected_per_firmware_project() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let prim = root.to_string_lossy().into_owned();
+        let generic = root.join("Core").to_string_lossy().into_owned();
+        let mut cfg = Config { project_dir: prim.clone(), ..Config::default() };
+        assert_eq!(cfg.firmware_profile(), FirmwareProfile::PrimGpt);
+        cfg.project_dir = generic;
+        assert_eq!(cfg.firmware_profile(), FirmwareProfile::Swd);
+        cfg.projects.insert(prim.clone(), ProjectOptions {
+            profile: Some(FirmwareProfile::Swd),
+            elf: "Release/field-test.elf".into(),
+        });
+        assert!(cfg.elf_override().is_none());
+        cfg.project_dir = prim;
+        let cfg: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(cfg.firmware_profile(), FirmwareProfile::Swd);
+        assert_eq!(cfg.elf_override(), Some(root.join("Release/field-test.elf")));
+    }
 
     #[test]
     fn projects_switch_board_and_keep_recent() {

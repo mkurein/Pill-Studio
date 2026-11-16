@@ -7,6 +7,7 @@ pub mod log;
 pub mod mcu;
 pub mod memory;
 pub mod overview;
+pub mod primgpt;
 pub mod proto_view;
 pub mod regs;
 pub mod rtos;

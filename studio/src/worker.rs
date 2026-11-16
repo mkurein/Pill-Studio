@@ -2,7 +2,7 @@
 //! `Job`s, the worker runs them and publishes `State` + streamed events into an
 //! inbox that the UI drains once per frame (pattern from DigiPot Studio).
 
-use crate::core::config::{self, Config, Run};
+use crate::core::config::{self, Config, FirmwareProfile, Run};
 use crate::core::debug::{self, AsmLine, StepKind};
 use crate::core::elf::{self, Elf};
 use crate::core::faults::{self, Step};
@@ -69,9 +69,10 @@ pub enum Job {
     ReadWords(Vec<u32>),
     WriteWord(u32, u32),
     OcdExec(String),
-    LoadElf(PathBuf),
-    /// Another project of the same board became active: reload its ELF.
-    Project(String),
+    LoadElf(Option<PathBuf>),
+    Profile(FirmwareProfile),
+    /// Change project and close the previous debug session.
+    Project(Box<Config>),
     /// Build, and flash right after a successful build.
     BuildFlash(Config),
     Build(Config),
@@ -82,7 +83,7 @@ pub enum Job {
     SimStop,
     /// Another board was selected (`boards::cur()` is already switched): close
     /// every link, take its SVD and project, reload the ELF.
-    Board(Arc<Vec<Peripheral>>, String),
+    Board(Arc<Vec<Peripheral>>, Box<Config>),
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +135,7 @@ pub struct State {
     pub mem: HashMap<u32, u32>,
     pub mem_t: f64,
     pub elf: Option<Arc<Elf>>,
+    pub elf_error: Option<String>,
     pub job: Option<String>,
     pub job_out: Vec<String>,
     pub job_ok: Option<bool>,
@@ -290,6 +292,9 @@ struct Eng {
     next_id: u64,
     bg: Option<BgJob>,
     project: PathBuf,
+    profile: FirmwareProfile,
+    elf_override: Option<PathBuf>,
+    elf_stamp: Option<std::time::SystemTime>,
     toolchain: String,
     out: Inbox,
     /// Cursor / VS Code CLI; on every stop it gets `-g file:line`.
@@ -316,6 +321,8 @@ impl Worker {
         let pending = Arc::new(AtomicUsize::new(0));
         let (inbox2, pending2) = (inbox.clone(), pending.clone());
         let project = PathBuf::from(&cfg.project_dir);
+        let profile = cfg.firmware_profile();
+        let elf_override = cfg.elf_override();
         let toolchain = cfg.toolchain_dir.clone();
         let poll_ms = cfg.poll_ms.max(200);
         let editor = cfg.editor();
@@ -333,7 +340,10 @@ impl Worker {
                     last_poll: Instant::now(),
                     next_id: 1,
                     bg: None,
-                    project: project.clone(),
+                    project,
+                    profile,
+                    elf_override,
+                    elf_stamp: None,
                     toolchain,
                     out: Inbox::default(),
                     editor,
@@ -346,12 +356,7 @@ impl Worker {
                     last_watch: Instant::now() - Duration::from_secs(10),
                     repaint: false,
                 };
-                for p in elf::candidates(&project) {
-                    if p.exists() {
-                        e.load_elf(&p, false);
-                        break;
-                    }
-                }
+                e.watch_project();
                 loop {
                     let first = match rx.recv_timeout(Duration::from_millis(100)) {
                         Ok(j) => Some(j),
@@ -509,11 +514,16 @@ impl Eng {
                 self.st.job = None;
                 self.st.job_ok = Some(ok);
                 self.toast(if ok { Tone::Ok } else { Tone::Err }, format!("{}: {}", name, if ok { "успешно" } else { "ошибка" }));
-                if reload && ok {
-                    self.reload_elf();
-                }
+                let loaded = reload && ok && self.reload_elf(true);
                 self.last_watch = Instant::now() - Duration::from_secs(10);
                 if let (true, Some(cfg)) = (ok, then) {
+                    if !loaded || self.st.elf_mtime < newest_source(&self.project) {
+                        let message = "Прошивка пропущена: после сборки нет актуального ELF. Проверьте путь к ELF.";
+                        self.st.job_out.push(message.into());
+                        self.st.job_ok = Some(false);
+                        self.toast(Tone::Err, message);
+                        return;
+                    }
                     let log = std::mem::take(&mut self.st.job_out);
                     self.run(Job::Flash(*cfg));
                     let flash = std::mem::take(&mut self.st.job_out);
@@ -587,40 +597,97 @@ impl Eng {
     /// Sources newer than the ELF = edited (in Cursor) after the last build.
     /// Git is asked again only when the sources change.
     fn watch_project(&mut self) {
+        if self.st.elf.is_none()
+            || self.st.elf.as_ref().and_then(|e| file_stamp(&e.path)) != self.elf_stamp
+        {
+            self.reload_elf(false);
+        }
         let src = newest_source(&self.project);
         if src != self.st.src_mtime || self.st.git.is_empty() {
             self.st.git = git_state(&self.project);
         }
-        let elf = self.st.elf.as_ref().and_then(|e| mtime(&e.path));
-        self.repaint |= (src, elf) != (self.st.src_mtime, self.st.elf_mtime);
+        self.repaint |= src != self.st.src_mtime;
         self.st.src_mtime = src;
-        self.st.elf_mtime = elf;
     }
 
-    fn reload_elf(&mut self) {
-        for p in elf::candidates(&self.project) {
-            if p.exists() {
-                self.load_elf(&p, true);
-                return;
+    fn reload_elf(&mut self, notify: bool) -> bool {
+        let preferred = (self.profile == FirmwareProfile::PrimGpt).then(|| boards::cur().elf);
+        let target = match &self.elf_override {
+            Some(path) => Ok(Some(path.clone())),
+            None => elf::discover(&self.project, preferred),
+        };
+        if let (Ok(Some(path)), Some(current)) = (&target, &self.st.elf) {
+            if &current.path == path && file_stamp(path) == self.elf_stamp {
+                return true;
             }
         }
-    }
-
-    fn load_elf(&mut self, p: &std::path::Path, toast: bool) {
-        match Elf::load(p) {
-            Ok(e) => {
-                self.st.elf_mtime = mtime(p);
-                // a trace belongs to the build it was taken on
-                self.st.boot_trace.clear();
-                self.st.boot_note.clear();
-                if toast {
-                    self.toast(Tone::Ok, format!("ELF загружен: {} символов", e.syms.len()));
+        let loaded = target.and_then(|path| {
+            let Some(path) = path else { return Ok(None) };
+            let stamp = file_stamp(&path);
+            let elf = Elf::load(&path)?;
+            Ok(Some((elf, stamp)))
+        });
+        match loaded {
+            Ok(Some((elf, stamp))) => {
+                self.invalidate_elf_state();
+                self.elf_stamp = stamp;
+                self.st.elf_mtime = mtime(&elf.path);
+                if notify {
+                    self.toast(Tone::Ok, format!("ELF загружен: {} символов", elf.syms.len()));
                 }
-                self.st.elf = Some(Arc::new(e));
+                self.st.elf = Some(Arc::new(elf));
+                self.st.elf_error = None;
                 self.verify_flash();
+                self.repaint = true;
             }
-            Err(e) => self.toast(Tone::Err, e),
+            Ok(None) => {
+                self.invalidate_elf_state();
+                self.repaint |= self.st.elf_error.take().is_some();
+            }
+            Err(error) => {
+                self.invalidate_elf_state();
+                self.repaint |= self.st.elf_error.as_ref() != Some(&error);
+                if notify {
+                    self.toast(Tone::Err, &error);
+                }
+                self.st.elf_error = Some(error);
+            }
         }
+        self.st.elf.is_some()
+    }
+
+    fn invalidate_elf_state(&mut self) {
+        self.repaint |= self.st.elf.take().is_some();
+        self.elf_stamp = None;
+        self.st.elf_mtime = None;
+        self.st.flash_check = None;
+        self.st.boot_trace.clear();
+        self.st.boot_note.clear();
+        self.st.diag = None;
+        self.last_halt_pc = None;
+        self.last_jump = None;
+    }
+
+    fn use_project(&mut self, cfg: &Config) {
+        self.proto = None;
+        self.log = None;
+        self.swd = None;
+        self.profile = cfg.firmware_profile();
+        self.project = PathBuf::from(&cfg.project_dir);
+        self.elf_override = cfg.elf_override();
+        self.toolchain = cfg.toolchain_dir.clone();
+        self.sim = SimBoard::new();
+        self.robust_q.clear();
+        self.robust_prev = None;
+        self.robust_first = None;
+        self.out.txns.clear();
+        self.out.lines.clear();
+        self.out.samples.clear();
+        self.st = State { poll_ms: self.st.poll_ms, sim_fram: true, ..Default::default() };
+        self.invalidate_elf_state();
+        self.last_watch = Instant::now();
+        self.watch_project();
+        self.repaint = true;
     }
 
     /// One request/response on USART1, logged as a transaction.
@@ -780,6 +847,9 @@ impl Eng {
     fn verify_flash(&mut self) {
         self.st.flash_check = None;
         let Some(elf) = self.st.elf.clone() else { return };
+        if elf.flash_image.is_empty() {
+            return;
+        }
         let Some(Swd::Real(o)) = self.swd.as_mut() else { return };
         let mut bytes = 0u32;
         let mut at = None;
@@ -1235,6 +1305,14 @@ impl Eng {
     }
 
     fn run(&mut self, job: Job) {
+        if self.profile != FirmwareProfile::PrimGpt
+            && matches!(job, Job::ProtoOpen(_) | Job::ProtoSim | Job::LogOpen(_) | Job::LogSim
+                | Job::SwdSim | Job::Send { .. } | Job::Poll(true) | Job::Stress(_)
+                | Job::Plan { .. } | Job::Robust(_) | Job::ReadDiag | Job::HilTest(_) | Job::SimFram(_))
+        {
+            self.toast(Tone::Warn, "Действие доступно в профиле primGPT");
+            return;
+        }
         match job {
             Job::ProtoOpen(name) => match ProtoPort::open(&name) {
                 Ok(p) => {
@@ -1597,25 +1675,39 @@ impl Eng {
                     self.st.ocd_console.drain(..n - 400);
                 }
             }
-            Job::LoadElf(p) => self.load_elf(&p, true),
-            Job::Board(svd, project) => {
-                self.proto = None;
-                self.log = None;
-                self.swd = None;
+            Job::LoadElf(path) => {
+                self.elf_override = path;
+                self.reload_elf(true);
+            }
+            Job::Board(svd, cfg) => {
                 self.svd = svd;
-                self.sim = SimBoard::new();
-                self.project = PathBuf::from(project);
-                self.last_watch = Instant::now() - Duration::from_secs(10);
-                let keep = (self.st.poll_ms, self.st.sim_fram);
-                self.st = State { poll_ms: keep.0, sim_fram: keep.1, ..Default::default() };
-                self.last_halt_pc = None;
-                self.last_jump = None;
-                for p in elf::candidates(&self.project) {
-                    if p.exists() {
-                        self.load_elf(&p, false);
-                        break;
-                    }
+                self.use_project(&cfg);
+            }
+            Job::Project(cfg) => self.use_project(&cfg),
+            Job::Profile(profile) => {
+                self.profile = profile;
+                if profile == FirmwareProfile::Swd {
+                    self.run(Job::SimStop);
+                    self.proto = None;
+                    self.log = None;
+                    self.st.proto = None;
+                    self.st.log = None;
+                    self.st.fw = None;
+                    self.st.status = None;
+                    self.st.diag = None;
+                    self.st.tasks = None;
+                    self.st.tasks_prev = None;
+                    self.st.stats = None;
+                    self.st.stats_prev = None;
+                    self.st.polling = false;
+                    self.robust_q.clear();
+                    self.robust_prev = None;
+                    self.robust_first = None;
+                    self.st.robust.clear();
+                    self.st.robust_left = 0;
+                    self.st.robust_total = None;
                 }
+                self.reload_elf(false);
             }
             Job::Build(cfg) => {
                 let c = Self::shell(&cfg.build_cmd, &cfg.project_dir, &cfg.toolchain_dir);
@@ -1634,23 +1726,13 @@ impl Eng {
                     bg.then_flash = Some(Box::new(cfg));
                 }
             }
-            Job::Project(dir) => {
-                self.project = PathBuf::from(dir);
-                self.st.elf = None;
-                self.st.elf_mtime = None;
-                self.st.job_out.clear();
-                self.st.job_ok = None;
-                for p in elf::candidates(&self.project) {
-                    if p.exists() {
-                        self.load_elf(&p, false);
-                        break;
-                    }
-                }
-                self.st.git.clear();
-                self.watch_project();
-            }
             Job::Flash(cfg) => {
                 let t1 = Instant::now();
+                if self.project != std::path::Path::new(&cfg.project_dir) || cfg.board != boards::cur().id {
+                    self.toast(Tone::Err, "Проект или плата изменились. Повторите прошивку из «Обзора».");
+                    return;
+                }
+                self.reload_elf(false);
                 let elf = self.st.elf.as_ref().map(|e| e.path.clone());
                 let Some(elf) = elf else {
                     self.toast(Tone::Err, "Нет ELF: сначала соберите прошивку");
@@ -1659,7 +1741,12 @@ impl Eng {
                 if self.swd.is_none() || matches!(self.swd, Some(Swd::Sim)) {
                     self.run(Job::SwdOpen(cfg.ocd.clone()));
                 }
-                let path = elf.to_string_lossy().replace('\\', "/");
+                if self.st.idcode.and_then(boards::by_idcode).is_some_and(|board| board != cfg.board) {
+                    self.st.job_ok = Some(false);
+                    self.toast(Tone::Err, "По SWD отвечает другая плата. Выберите её перед прошивкой.");
+                    return;
+                }
+                let path = config::display_path(&elf.to_string_lossy()).replace('\\', "/");
                 let r = match self.swd.as_mut() {
                     Some(Swd::Real(o)) => o.eval(&format!("program {{{}}} verify reset", path)),
                     _ => Err("SWD не подключён".into()),
@@ -1758,8 +1845,12 @@ fn ctl_fail(cmd: &str, err: &str) -> String {
     format!("{what}: {err}")
 }
 
+fn file_stamp(p: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).ok()?.modified().ok()
+}
+
 fn mtime(p: &std::path::Path) -> Option<u64> {
-    let t = std::fs::metadata(p).ok()?.modified().ok()?;
+    let t = file_stamp(p)?;
     t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 

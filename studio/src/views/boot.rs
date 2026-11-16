@@ -127,11 +127,16 @@ pub fn show(ui: &mut egui::Ui, sh: &Shared, st: &mut St) {
             "Что происходит от сброса до работающих задач, почему плата перезапустилась в последний раз и что при этом сохранилось.",
         );
         super::fresh::bar(ui, sh);
-        reset_card(ui, sh, st);
-        ui.add_space(8.0);
-        guard_card(ui, sh, st);
-        ui.add_space(8.0);
+        if sh.primgpt() {
+            reset_card(ui, sh, st);
+            ui.add_space(8.0);
+            guard_card(ui, sh, st);
+            ui.add_space(8.0);
+        }
         path_card(ui, sh, st);
+        if !sh.primgpt() {
+            return;
+        }
         ui.add_space(8.0);
         egui::CollapsingHeader::new("Справка: что переживает сброс, вход в прерывание, сбой питания").id_salt("boot_ref").show(ui, |ui| {
         ui.columns(2, |cols| {

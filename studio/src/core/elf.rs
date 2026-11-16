@@ -1,4 +1,4 @@
-//! Firmware ELF (`build/primGPT.elf` or CubeIDE `Debug/primGPT.elf`):
+//! Firmware ELF:
 //! symbols for live variable reads and the section map for the memory view.
 //! Source lines for fault addresses come from `arm-none-eabi-addr2line` if present.
 
@@ -43,6 +43,12 @@ impl Elf {
     pub fn load(path: &Path) -> Result<Elf, String> {
         let data = std::fs::read(path).map_err(|e| format!("{}: {}", path.display(), e))?;
         let file = object::File::parse(&*data).map_err(|e| format!("ELF: {}", e))?;
+        if file.format() != object::BinaryFormat::Elf
+            || file.architecture() != object::Architecture::Arm
+            || file.kind() != object::ObjectKind::Executable
+        {
+            return Err(format!("{}: нужен исполняемый ARM ELF", path.display()));
+        }
         let mut syms: Vec<Sym> = file
             .symbols()
             .filter(|s| matches!(s.kind(), SymbolKind::Data | SymbolKind::Text) && s.size() > 0)
@@ -219,15 +225,50 @@ fn tool_bin(tool_dir: &str, which: &str) -> PathBuf {
     crate::core::config::find_tool(&name)
 }
 
-/// Default ELF locations relative to the project root.
-pub fn candidates(project: &Path) -> Vec<PathBuf> {
-    let name = super::boards::cur().elf;
-    vec![project.join("build").join(name), project.join("Debug").join(name)]
+/// The stock build can coexist with a CubeIDE build. For other names,
+/// require an unambiguous match or a path chosen by the user.
+pub fn discover(project: &Path, preferred: Option<&str>) -> Result<Option<PathBuf>, String> {
+    if project.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    if let Some(name) = preferred {
+        if let Some(path) = ["build", "Debug"].into_iter().map(|dir| project.join(dir).join(name)).find(|p| p.is_file()) {
+            return Ok(Some(path));
+        }
+    }
+    let mut candidates = ["", "build", "Debug", "Release"].into_iter()
+        .filter_map(|dir| std::fs::read_dir(project.join(dir)).ok())
+        .flatten()
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("elf")));
+    let first = candidates.next();
+    if candidates.next().is_some() {
+        return Err("Найдено несколько ELF. Укажите нужный файл на экране «Обзор».".into());
+    }
+    Ok(first)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovers_custom_elf_and_requires_a_choice_when_ambiguous() {
+        let root = std::env::temp_dir().join(format!("pill-elf-{}", std::process::id()));
+        let debug = root.join("Debug");
+        std::fs::create_dir_all(&debug).unwrap();
+        let custom = debug.join("blinky.elf");
+        let prim = debug.join("primGPT.elf");
+        std::fs::write(&custom, []).unwrap();
+        assert_eq!(discover(&root, None).unwrap(), Some(custom.clone()));
+        std::fs::write(&prim, []).unwrap();
+        assert!(discover(&root, None).is_err());
+        assert_eq!(discover(&root, Some("primGPT.elf")).unwrap(), Some(prim.clone()));
+        std::fs::remove_file(prim).unwrap();
+        std::fs::remove_file(custom).unwrap();
+        std::fs::remove_dir(debug).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn windows_path_keeps_the_drive_letter() {

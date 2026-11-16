@@ -14,6 +14,7 @@ pub mod mcu_f411;
 pub mod openocd;
 pub mod proto;
 pub mod sim;
+pub mod sources;
 pub mod svd;
 
 /// `g_diag` from Core/Inc/diag.h (24 words, .noinit RAM). Keep in sync.

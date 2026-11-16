@@ -116,23 +116,35 @@ pub struct Place {
 
 /// Function and `file:line` from DWARF (`arm-none-eabi-addr2line`).
 pub fn place(elf: &Elf, tool_dir: &str, addr: u32) -> Option<Place> {
-    let mut c = Command::new(addr2line_bin(tool_dir));
-    c.args(["-f", "-C", "-e"]).arg(&elf.path).arg(format!("0x{:08x}", addr & !1));
+    places(&elf.path, tool_dir, &[addr]).ok()?.pop().flatten()
+}
+
+/// One addr2line invocation for a group of addresses, in input order.
+pub fn places(elf: &Path, tool_dir: &str, addrs: &[u32]) -> Result<Vec<Option<Place>>, String> {
+    let bin = addr2line_bin(tool_dir);
+    let mut c = Command::new(&bin);
+    c.args(["-f", "-C", "-e"]).arg(elf);
+    c.args(addrs.iter().map(|addr| format!("0x{:08x}", addr & !1)));
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000);
     }
-    let o = c.output().ok()?;
-    let s = String::from_utf8_lossy(&o.stdout);
-    let mut lines = s.lines();
-    let func = lines.next()?.trim();
-    let loc = lines.next()?.trim();
-    if func.is_empty() || func == "??" {
-        return None;
+    let o = c.output().map_err(|e| format!("{}: {e}", bin.display()))?;
+    if !o.status.success() {
+        return Err(String::from_utf8_lossy(&o.stderr).trim().into());
     }
-    let (file, line) = split_loc(loc)?;
-    Some(Place { func: func.to_string(), file, line })
+    let s = String::from_utf8_lossy(&o.stdout);
+    parse_places(&s, addrs.len())
+}
+
+fn parse_places(s: &str, count: usize) -> Result<Vec<Option<Place>>, String> {
+    let mut lines = s.lines();
+    (0..count).map(|_| {
+        let func = lines.next().ok_or("Неполный вывод addr2line")?.trim();
+        let loc = lines.next().ok_or("Неполный вывод addr2line")?.trim();
+        Ok(split_loc(loc).map(|(file, line)| Place { func: func.to_string(), file, line }))
+    }).collect::<Result<_, &str>>().map_err(str::to_string)
 }
 
 /// "file.c:123 (function)" via addr2line, or the symbol name.
@@ -147,26 +159,11 @@ pub fn where_is(elf: &Elf, tool_dir: &str, addr: u32) -> String {
 /// Last `:digits` is the line. The drive letter colon in `C:/...` stays in the path.
 pub fn split_loc(loc: &str) -> Option<(String, u32)> {
     let (path, line) = loc.rsplit_once(':')?;
-    let line: u32 = line.parse().ok()?;
+    let line: u32 = line.split_whitespace().next()?.parse().ok()?;
     if line == 0 || path.is_empty() || path == "??" {
         return None;
     }
     Some((path.to_string(), line))
-}
-
-/// DWARF often stores a path relative to the project, sometimes absolute.
-pub fn source_file(project: &Path, loc: &str) -> Option<PathBuf> {
-    let p = PathBuf::from(loc);
-    if p.is_file() {
-        return Some(p);
-    }
-    let joined = project.join(&p);
-    if joined.is_file() {
-        return Some(joined);
-    }
-    let name = p.file_name()?;
-    let under = project.join("Core").join("Src").join(name);
-    under.is_file().then_some(under)
 }
 
 /// Thumb listing from the ELF. ST's OpenOCD is built without Capstone, so
@@ -279,3 +276,15 @@ mod tests {
         assert_eq!(split_loc("??:0"), None);
     }
 }
+    #[test]
+    fn batch_locations_keep_unmapped_addresses_in_order() {
+        let output = "??\n??:0\nhandler\nC:/Project/Core/Src/main.c:73 (discriminator 1)\n";
+        let locations = parse_places(output, 2).unwrap();
+        assert_eq!(locations[0], None);
+        assert_eq!(locations[1], Some(Place {
+            func: "handler".into(),
+            file: "C:/Project/Core/Src/main.c".into(),
+            line: 73,
+        }));
+        assert!(parse_places(output, 3).is_err());
+    }
